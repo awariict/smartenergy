@@ -28,7 +28,7 @@ st.set_page_config(page_title="Smart Energy Dashboard", page_icon="⚡", layout=
 
 st.markdown("""
 <style>
-.stApp { background: linear-gradient(to right, #007BFF, #FFC107, #FF0000); color: white;}
+.stApp { background: linear-gradient(to right, #007BFF, #FFC107, #FF0000); color: green;}
 div.stButton > button { background-color: black; color: white; height: 3em; width: 12em; border-radius: 8px; font-size:16px;}
 </style>
 """, unsafe_allow_html=True)
