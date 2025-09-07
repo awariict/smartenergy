@@ -1,0 +1,6 @@
+streamlit
+pandas
+numpy
+pymongo[srv]
+tensorflow
+streamlit-autorefresh
