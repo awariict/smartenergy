@@ -22,7 +22,7 @@ readings_col = db["energy_readings"]
 # ----------------------------
 # Streamlit UI
 # ----------------------------
-st.set_page_config(page_title="Smart Energy Dashboard", page_icon="⚡", layout="wide")
+st.set_page_config(page_title="Smart Energy Dashboard", page_icon="(⚡⚡⚡)", layout="wide")
 st.markdown("""
 <style>
 .stApp { background: linear-gradient(to right, #007BFF, #FFC107, #FF0000); color: green;}
