@@ -1,5 +1,4 @@
 import streamlit as st
-import pandas as pd
 import numpy as np
 import hashlib
 from datetime import datetime
@@ -114,14 +113,16 @@ if st.session_state.user is None:
     st.title("Login / Register")
     st.session_state.auth_option = st.selectbox("Choose Action", ["Login", "Register"], index=0)
 
+    # ---------- Register Form ----------
     if st.session_state.auth_option == "Register":
-        with st.form("register_form"):
-            name = st.text_input("Full Name")
-            email = st.text_input("Email")
-            username = st.text_input("Username")
-            password = st.text_input("Password", type="password")
-            address = st.text_input("Address")
-            register_clicked = st.form_submit_button("Register")
+        with st.form("register_form", clear_on_submit=True):
+            name = st.text_input("Full Name", key="reg_name")
+            email = st.text_input("Email", key="reg_email")
+            username = st.text_input("Username", key="reg_username")
+            password = st.text_input("Password", type="password", key="reg_password")
+            address = st.text_input("Address", key="reg_address")
+            register_clicked = st.form_submit_button(label="Register")
+            
             if register_clicked:
                 if not (name and email and username and password and address):
                     st.warning("Please fill in all fields.")
@@ -132,11 +133,13 @@ if st.session_state.user is None:
                     else:
                         st.error(message)
 
+    # ---------- Login Form ----------
     elif st.session_state.auth_option == "Login":
-        with st.form("login_form"):
-            username = st.text_input("Username")
-            password = st.text_input("Password", type="password")
-            login_clicked = st.form_submit_button("Login")
+        with st.form("login_form", clear_on_submit=True):
+            username = st.text_input("Username", key="login_username")
+            password = st.text_input("Password", type="password", key="login_password")
+            login_clicked = st.form_submit_button(label="Login")
+            
             if login_clicked:
                 if not (username and password):
                     st.warning("Please enter username and password.")
@@ -194,14 +197,12 @@ if st.session_state.user:
     for appliance in user_appliances:
         appliance_id = appliance["_id"]
         current_status = appliance.get("status", "off")
-        # Turn ON selected appliances
         if appliance["name"] in selected_appliances and current_status != "on":
             appliances_col.update_one({"_id": appliance_id}, {"$set": {"status": "on"}})
-        # Turn OFF unselected appliances
         elif appliance["name"] not in selected_appliances and current_status != "off":
             appliances_col.update_one({"_id": appliance_id}, {"$set": {"status": "off"}})
 
-    # Show current appliance status
+    # Show appliance status
     for appliance in appliances_col.find({"user_id": user_id}):
         status = appliance.get("status", "off")
         st.write(f"{appliance['name']}: {status.upper()}")
