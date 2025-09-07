@@ -1,4 +1,3 @@
-import streamlit as st
 import numpy as np
 import hashlib
 from datetime import datetime
@@ -8,7 +7,6 @@ from tensorflow.keras.layers import LSTM, Dense
 from streamlit_autorefresh import st_autorefresh
 import smtplib
 from email.mime.text import MIMEText
-import pandas as pd
 
 # ----------------------------
 # MongoDB Atlas Setup
@@ -23,7 +21,7 @@ readings_col = db["energy_readings"]
 # ----------------------------
 # Streamlit UI
 # ----------------------------
-st.set_page_config(page_title="Smart Energy Dashboard", page_icon="⚡", layout="wide")
+st.set_page_config(page_title="Smart Energy Dashboard", page_icon="(⚡⚡⚡)", layout="wide")
 st.markdown("""
 <style>
 .stApp { background: linear-gradient(to right, #007BFF, #FFC107, #FF0000); color: green;}
@@ -61,8 +59,8 @@ def login_user(username, password):
 
 def send_email(to_email, subject, message):
     try:
-        sender_email = "youremail@gmail.com"  # Replace
-        sender_password = "your_app_password" # Replace
+        sender_email = "youremail@gmail.com"  # your email
+        sender_password = "your_app_password"
         msg = MIMEText(message)
         msg["Subject"] = subject
         msg["From"] = sender_email
@@ -74,26 +72,30 @@ def send_email(to_email, subject, message):
         st.error(f"Email failed: {e}")
 
 # ----------------------------
-# Energy Logging
+# LSTM Functions (AI Prediction Placeholder)
 # ----------------------------
-def log_energy_usage(user_id, appliance):
-    start_time = appliance.get("start_time")
-    if appliance["status"] == "on" and not start_time:
-        appliances_col.update_one({"_id": appliance["_id"]}, {"$set": {"start_time": datetime.now()}})
-    elif appliance["status"] == "off" and start_time:
-        end_time = datetime.now()
-        duration = (end_time - start_time).total_seconds() / 3600  # hours
-        consumption = (appliance["power_rating"] / 1000) * duration
-        cost = consumption * 100
-        readings_col.insert_one({
-            "user_id": user_id,
-            "appliance": appliance["name"],
-            "consumption": consumption,
-            "cost": cost,
-            "start_time": start_time,
-            "end_time": end_time
-        })
-        appliances_col.update_one({"_id": appliance["_id"]}, {"$unset": {"start_time": ""}})
+def prepare_lstm_data(readings, seq_length=5):
+    X, y = [], []
+    for i in range(len(readings) - seq_length):
+        X.append(readings[i:i+seq_length])
+        y.append(readings[i+seq_length])
+    X = np.array(X)
+    y = np.array(y)
+    return X.reshape((X.shape[0], X.shape[1], 1)), y
+
+def train_lstm(readings):
+    if len(readings) < 10:
+        return None
+    X, y = prepare_lstm_data(readings)
+    model = Sequential()
+    model.add(LSTM(50, activation='relu', input_shape=(X.shape[1], X.shape[2])))
+    model.add(Dense(1))
+    model.compile(optimizer='adam', loss='mse')
+    model.fit(X, y, epochs=50, batch_size=8, verbose=0)
+    return model
+
+def predict_next_consumption(model, last_seq):
+    return model.predict(last_seq.reshape((1, last_seq.shape[0], 1)), verbose=0)[0][0]
 
 # ----------------------------
 # Session State
@@ -110,6 +112,7 @@ if st.session_state.user is None:
     st.title("Login / Register")
     st.session_state.auth_option = st.selectbox("Choose Action", ["Login", "Register"], index=0)
 
+    # ---------- Register Form ----------
     if st.session_state.auth_option == "Register":
         with st.form("register_form", clear_on_submit=True):
             name = st.text_input("Full Name", key="reg_name")
@@ -118,6 +121,7 @@ if st.session_state.user is None:
             password = st.text_input("Password", type="password", key="reg_password")
             address = st.text_input("Address", key="reg_address")
             register_clicked = st.form_submit_button(label="Register")
+            
             if register_clicked:
                 if not (name and email and username and password and address):
                     st.warning("Please fill in all fields.")
@@ -128,11 +132,13 @@ if st.session_state.user is None:
                     else:
                         st.error(message)
 
+    # ---------- Login Form ----------
     elif st.session_state.auth_option == "Login":
         with st.form("login_form", clear_on_submit=True):
             username = st.text_input("Username", key="login_username")
             password = st.text_input("Password", type="password", key="login_password")
             login_clicked = st.form_submit_button(label="Login")
+            
             if login_clicked:
                 if not (username and password):
                     st.warning("Please enter username and password.")
@@ -156,8 +162,8 @@ if st.session_state.user:
     current_funds = users_col.find_one({"_id": user_id})["funds"]
     st.metric("Current Balance (₦)", current_funds)
     if current_funds <= 500:
-        st.error("⚠ Your account funds are low!")
-        send_email(st.session_state.user["email"], "Low Funds Alert",
+        st.error("⚠ Your account funds are low! Please fund to continue using appliances.")
+        send_email(st.session_state.user["email"], "Low Funds Alert", 
                    f"Your account balance is below ₦500. Current balance: ₦{current_funds}")
 
     # Fund Account
@@ -190,41 +196,37 @@ if st.session_state.user:
     for appliance in user_appliances:
         appliance_id = appliance["_id"]
         current_status = appliance.get("status", "off")
-
         if appliance["name"] in selected_appliances and current_status != "on":
             appliances_col.update_one({"_id": appliance_id}, {"$set": {"status": "on"}})
         elif appliance["name"] not in selected_appliances and current_status != "off":
             appliances_col.update_one({"_id": appliance_id}, {"$set": {"status": "off"}})
 
-        # Log usage
-        updated_appliance = appliances_col.find_one({"_id": appliance_id})
-        log_energy_usage(user_id, updated_appliance)
-
     # Show appliance status
     for appliance in appliances_col.find({"user_id": user_id}):
-        st.write(f"{appliance['name']}: {appliance.get('status','off').upper()}")
+        status = appliance.get("status", "off")
+        st.write(f"{appliance['name']}: {status.upper()}")
 
-    # ----------------------------
-    # Reports & Graphs
-    # ----------------------------
-    st.subheader("Energy Consumption Report")
-    data = list(readings_col.find({"user_id": user_id}))
-    if data:
-        df = pd.DataFrame(data)
-        df["appliance"] = df["appliance"].astype(str)
+    # Energy Consumption & Fund Deduction
+    st.subheader("Appliance Energy Usage & Fund Deduction")
+    current_funds = users_col.find_one({"_id": user_id})["funds"]
+    funds_updated = False
 
-        # Line Chart
-        st.line_chart(df.set_index("end_time")["consumption"])
+    for appliance in appliances_col.find({"user_id": user_id}):
+        if appliance["status"] == "on":
+            power = appliance.get("power_rating", 100)
+            usage_hours = 0.1
+            consumption = (power / 1000) * usage_hours
+            cost = consumption * 100
 
-        # Bar Chart (ranking)
-        st.bar_chart(df.groupby("appliance")["consumption"].sum())
+            if current_funds >= cost:
+                users_col.update_one({"_id": user_id}, {"$inc": {"funds": -cost}})
+                current_funds -= cost
+                funds_updated = True
+            else:
+                st.warning(f"⚠ Funds too low for {appliance['name']}. Turn it off or fund account!")
+                appliances_col.update_one({"_id": appliance["_id"]}, {"$set": {"status": "off"}})
 
-        # Appliance Ranking Table
-        ranked = df.groupby("appliance")["consumption"].sum().sort_values(ascending=False)
-        st.table(ranked)
+            st.write(f"{appliance['name']} - Consumption: {consumption:.3f} kWh, Cost: ₦{cost:.2f}")
 
-        # Download Button
-        csv = df.to_csv(index=False).encode("utf-8")
-        st.download_button("📥 Download Report (CSV)", csv, "energy_report.csv", "text/csv")
-    else:
-        st.info("No usage data yet. Turn appliances ON/OFF to generate logs.")
+    if funds_updated:
+        st.metric("Current Balance (₦)", current_funds)
