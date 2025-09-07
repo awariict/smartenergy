@@ -1,6 +1,7 @@
 streamlit
+pymongo
 pandas
 numpy
-pymongo[srv]
 tensorflow
+scikit-learn
 streamlit-autorefresh
