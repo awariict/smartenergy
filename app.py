@@ -266,55 +266,19 @@ DEFAULT_APPLIANCES = [
 st.set_page_config(page_title="Smart Energy System", layout="centered")
 
 # --- Sidebar CSS injection ---
+st.set_page_config(page_title="Smart Energy System", layout="centered")
+
 st.markdown("""
 <style>
-.sidebar-content {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 12px;
-    margin-top: 20px;
-}
-.sidebar-btn {
-    width: 180px !important;
-    min-width: 180px !important;
-    max-width: 180px !important;
-    height: 44px !important;
-    min-height: 44px !important;
-    max-height: 44px !important;
-    background-color: white !important;
-    color: black !important;
-    font-weight: bold !important;
-    border-radius: 8px !important;
-    border: none !important;
-    margin: 0 auto !important;
-    display: block !important;
-    text-align: center !important;
-    cursor: pointer !important;
-}
-.sidebar-btn:hover {
-    background-color: #f2f2f2 !important;
-}
+.stApp { background: linear-gradient(to right, #007BFF, #FFC107, #FF0000); }
+section[data-testid="stSidebar"] { background: black !important; }
+.sidebar-content { display: flex; flex-direction: column; align-items: center; gap: 12px; margin-top: 20px; }
+.sidebar-btn { width: 180px; height: 44px; background-color: white !important; color: black !important; font-weight: bold; border-radius: 8px; border: none; margin: 0 auto; display: block; }
+.big-font { font-size:20px !important; }
+.card { background: white; padding: 12px; border-radius: 8px; box-shadow: 0 2px 6px rgba(0,0,0,0.08); margin-bottom: 8px; }
 </style>
 """, unsafe_allow_html=True)
 
-sidebar_items = ADMIN_SIDEBAR if user and user.get("role") == "admin" else USER_SIDEBAR
-st.sidebar.markdown("<div class='sidebar-content'>", unsafe_allow_html=True)
-for label, pageval in sidebar_items:
-    # Use HTML for buttons and JS for page setting (Streamlit workaround)
-    st.sidebar.markdown(
-        f"""
-        <form action="#" method="post">
-            <button class="sidebar-btn" type="submit" name="{pageval}">{label}</button>
-        </form>
-        """,
-        unsafe_allow_html=True
-    )
-    # To handle navigation, you still need to use Streamlit's button for actual page switching:
-    if st.sidebar.button(label, key=f"sidebar_{label}"):
-        st.session_state["page"] = pageval
-        st.rerun()
-st.sidebar.markdown("</div>", unsafe_allow_html=True)
 if "user_id" not in st.session_state:
     st.session_state["user_id"] = None
 if "page" not in st.session_state:
