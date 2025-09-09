@@ -199,7 +199,10 @@ def _simulate_meter(user_id, stop_event):
             prev_on = app.get("is_on", False)
             # Only change state if not manual
             if is_on and not prev_on:
-                appliances_col.update_one({"_id": app["_id"]}, {"$set": {"is_on": True, "session.started_at": now}})
+    appliances_col.update_one(
+        {"_id": app["_id"]},
+        {"$set": {"is_on": True, "session.started_at": now, "session.accum_kwh_session": 0}}
+    )
             elif not is_on and prev_on and not app.get("manual_control", False):
                 appliances_col.update_one({"_id": app["_id"]}, {"$set": {"is_on": False}})
             # If on, compute kWh for POLL_INTERVAL
@@ -312,7 +315,7 @@ if st.session_state.get("user_id"):
             st.rerun()
     st.sidebar.markdown("</div>", unsafe_allow_html=True)
 
-st.title("Intelligent Smart Energy System")
+st.title("Eyeh Intelligent Smart Energy System")
 st.write("Manage your simulated prepaid meter, appliances, and funds.")
 
 # ---------------------- Register ----------------------
