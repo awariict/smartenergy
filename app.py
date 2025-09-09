@@ -267,14 +267,61 @@ st.set_page_config(page_title="Smart Energy System", layout="centered")
 
 st.markdown("""
 <style>
-.stApp { background: linear-gradient(to right, #007BFF, #FFC107, #FF0000); }
-section[data-testid="stSidebar"] { background: black !important; }
-.sidebar-content { display: flex; flex-direction: column; align-items: center; gap: 12px; margin-top: 20px; }
-.sidebar-btn { width: 180px; height: 44px; background-color: white !important; color: black !important; font-weight: bold; border-radius: 8px; border: none; margin: 0 auto; display: block; }
-.sidebar-content button, .sidebar-btn { width: 180px !important; height: 44px !important; margin-left: auto; margin-right: auto; display: block !important; }
-.big-font { font-size:20px !important; }
-.card { background: white; padding: 12px; border-radius: 8px; box-shadow: 0 2px 6px rgba(0,0,0,0.08); margin-bottom: 8px; }
+/* App background */
+.stApp { 
+    background: linear-gradient(to right, #007BFF, #FFC107, #FF0000); 
+}
+
+/* Sidebar background */
+section[data-testid="stSidebar"] { 
+    background: black !important; 
+}
+
+/* Sidebar container */
+.sidebar-content { 
+    display: flex; 
+    flex-direction: column; 
+    align-items: center; 
+    gap: 12px; 
+    margin-top: 20px; 
+}
+
+/* Sidebar buttons */
+.sidebar-content button {
+    width: 180px !important;       /* uniform width */
+    height: 44px !important;       /* uniform height */
+    background-color: white !important; 
+    color: black !important; 
+    font-weight: bold; 
+    border-radius: 8px; 
+    border: none; 
+    display: block !important; 
+    text-align: center; 
+    margin: 0 auto !important;     /* center horizontally */
+    cursor: pointer;
+    transition: 0.2s ease-in-out;  /* smooth hover effect */
+}
+
+/* Hover effect for buttons */
+.sidebar-content button:hover {
+    background-color: #f0f0f0 !important;
+    transform: scale(1.03);
+}
+
+/* Extra styling */
+.big-font { 
+    font-size: 20px !important; 
+}
+
+.card { 
+    background: white; 
+    padding: 12px; 
+    border-radius: 8px; 
+    box-shadow: 0 2px 6px rgba(0,0,0,0.08); 
+    margin-bottom: 8px; 
+}
 </style>
+
 """, unsafe_allow_html=True)
 
 if "user_id" not in st.session_state:
