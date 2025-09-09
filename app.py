@@ -148,7 +148,7 @@ def create_user(full_name, email, phone, username, password, address, role="user
             "created_at": datetime.datetime.utcnow(),
         }
         appliances_col.insert_one(app_doc)
-    return True, "User registered successfully."
+    return True, "Registration is successful."
 
 def authenticate_user(username, password):
     user = users_col.find_one({"username": username})
@@ -271,6 +271,7 @@ st.markdown("""
 section[data-testid="stSidebar"] { background: black !important; }
 .sidebar-content { display: flex; flex-direction: column; align-items: center; gap: 12px; margin-top: 20px; }
 .sidebar-btn { width: 180px; height: 44px; background-color: white !important; color: black !important; font-weight: bold; border-radius: 8px; border: none; margin: 0 auto; display: block; }
+.sidebar-content button, .sidebar-btn { width: 180px !important; height: 44px !important; margin-left: auto; margin-right: auto; display: block !important; }
 .big-font { font-size:20px !important; }
 .card { background: white; padding: 12px; border-radius: 8px; box-shadow: 0 2px 6px rgba(0,0,0,0.08); margin-bottom: 8px; }
 </style>
@@ -432,7 +433,7 @@ if user and user.get("role") != "admin":
                 "timestamp": datetime.datetime.utcnow()
             })
             debt_repay(updated)
-            st.success(f"Added ₦{amount:,.2f} to your account.")
+            st.success(f"₦{amount:,.2f} has been credited to your account.")
             st.rerun()
         st.subheader("Withdraw funds to bank account")
         withdraw_allowed = can_withdraw(user)
@@ -458,7 +459,7 @@ if user and user.get("role") != "admin":
                     },
                     "timestamp": datetime.datetime.utcnow()
                 })
-                st.success(f"Withdrawn ₦{withdraw_amount:,.2f} to {bank_name} account {account_number}. You can only withdraw once a month.")
+                st.success(f"₦{withdraw_amount:,.2f} has been paid to your bank account ({bank_name} - {account_number}). You can only withdraw once a month.")
                 st.rerun()
         elif not withdraw_allowed:
             st.info("You may only withdraw once per month and cannot withdraw borrowed funds.")
@@ -572,7 +573,7 @@ if user and user.get("role") == "admin":
                     "metadata": {"reason": "admin_top_up"},
                     "timestamp": datetime.datetime.utcnow()
                 })
-                st.success(f"Funded ₦{fund_amount:,.2f} to {u.get('username')}")
+                st.success(f"₦{fund_amount:,.2f} has been added to {u.get('username')}'s account.")
                 st.rerun()
 
     elif page == "Logout":
