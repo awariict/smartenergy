@@ -11,8 +11,8 @@ import uuid
 import pandas as pd
 
 # ---------------------- Configuration ----------------------
-MONGO_URI = os.environ.get("mongodb+srv://euawari_db_user:6SnKvQvXXzrGeypA@cluster0.fkkzcvz.mongodb.net/smart_energy?retryWrites=true&w=majority")
-DB_NAME = os.environ.get("DB_NAME", "smart_energy")
+MONGO_URI = st.secrets.get("MONGO_URI", "mongodb+srv://euawari_db_user:6SnKvQvXXzrGeypA@cluster0.fkkzcvz.mongodb.net/smart_energy?retryWrites=true&w=majority")
+DB_NAME = st.secrets.get("DB_NAME", "smart_energy")
 PRICE_PER_KWH = float(os.environ.get("PRICE_PER_KWH", "150.0"))  # Naira per kWh
 POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL_SECONDS", "8"))  # seconds
 BORROW_AMOUNT = float(os.environ.get("BORROW_AMOUNT", "500.0"))  # Naira allowed to borrow
@@ -20,7 +20,13 @@ BORROW_AMOUNT = float(os.environ.get("BORROW_AMOUNT", "500.0"))  # Naira allowed
 # ---------------------- Database ----------------------
 @st.cache_resource(ttl=600)
 def get_db():
-    client = MongoClient(MONGO_URI)
+    client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
+    # Test connection immediately
+    try:
+        client.server_info()  # Forces a call to check connection
+    except Exception as e:
+        st.error(f"Cannot connect to MongoDB: {e}")
+        st.stop()
     return client[DB_NAME]
 
 db = get_db()
@@ -28,7 +34,6 @@ users_col = db.users
 meters_col = db.meters
 appliances_col = db.appliances
 transactions_col = db.transactions
-
 # ---------------------- Utilities ----------------------
 
 def gen_meter_id():
