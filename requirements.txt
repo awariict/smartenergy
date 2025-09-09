@@ -5,3 +5,4 @@ numpy
 tensorflow
 scikit-learn
 streamlit-autorefresh
+bcrypt
