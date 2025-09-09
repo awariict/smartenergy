@@ -198,7 +198,7 @@ def _simulate_meter(user_id, stop_event):
                 is_on = random.random() < base
             prev_on = app.get("is_on", False)
             # Only change state if not manual
-            if is_on and not prev_on:
+     if is_on and not prev_on:
     appliances_col.update_one(
         {"_id": app["_id"]},
         {"$set": {"is_on": True, "session.started_at": now, "session.accum_kwh_session": 0}}
