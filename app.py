@@ -159,7 +159,6 @@ def authenticate_user(username, password):
     return None
 
 # ---------------------- Simulation ----------------------
-
 def _simulate_meter(user_id, stop_event):
     # Appliance prediction always runs unless funds == 0
     while not stop_event.is_set():
@@ -198,11 +197,11 @@ def _simulate_meter(user_id, stop_event):
                 is_on = random.random() < base
             prev_on = app.get("is_on", False)
             # Only change state if not manual
-     if is_on and not prev_on:
-    appliances_col.update_one(
-        {"_id": app["_id"]},
-        {"$set": {"is_on": True, "session.started_at": now, "session.accum_kwh_session": 0}}
-    )
+            if is_on and not prev_on:
+                appliances_col.update_one(
+                    {"_id": app["_id"]},
+                    {"$set": {"is_on": True, "session.started_at": now, "session.accum_kwh_session": 0}}
+                )
             elif not is_on and prev_on and not app.get("manual_control", False):
                 appliances_col.update_one({"_id": app["_id"]}, {"$set": {"is_on": False}})
             # If on, compute kWh for POLL_INTERVAL
@@ -252,6 +251,8 @@ def stop_simulation_session():
         ev.set()
     st.session_state.pop("sim_stop", None)
     st.session_state.pop("sim_thread", None)
+
+
 
 # ---------------------- Default Appliances ----------------------
 DEFAULT_APPLIANCES = [
