@@ -544,23 +544,31 @@ if user and user.get("role") == "admin":
                 appliances_col.delete_many({"meter_id": u.get('meter_id')})
                 st.success("User deleted.")
                 st.rerun()
-
+                
     elif page == "Transaction Log":
-        st.header("Transaction Log (System-wide)")
-        txs = list(transactions_col.find({}).sort("timestamp",-1))
-        if txs:
-            tx_df = pd.DataFrame([{
-                "user": (users_col.find_one({"_id": t["user_id"]}) or {}).get("username", "deleted_user"),
-                "timestamp": t['timestamp'].strftime('%Y-%m-%d %H:%M:%S'),
-                "type": t['type'],
-                "amount": t['amount'],
-                "balance_after": t['balance_after']
-            } for t in txs])
-            st.dataframe(tx_df)
-            csv = tx_df.to_csv(index=False)
-            st.download_button("Print All Transactions", data=csv, file_name="all_transactions.csv", mime="text/csv")
-        else:
-            st.info("No transactions found.")
+    st.header("Transaction Log (System-wide)")
+
+    try:
+        txs = list(transactions_col.find({}).sort("timestamp", -1))
+    except Exception as e:
+        st.error(f"Error fetching transactions: {e}")
+        txs = list(transactions_col.find({}))  # fallback without sort
+
+    if txs:
+        tx_df = pd.DataFrame([{
+            "user": (users_col.find_one({"_id": t.get("user_id")}) or {}).get("username", "deleted_user"),
+            "timestamp": t.get('timestamp').strftime('%Y-%m-%d %H:%M:%S') if isinstance(t.get('timestamp'), datetime.datetime) else str(t.get('timestamp')),
+            "type": t.get('type'),
+            "amount": t.get('amount'),
+            "balance_after": t.get('balance_after')
+        } for t in txs])
+
+        st.dataframe(tx_df)
+
+        csv = tx_df.to_csv(index=False)
+        st.download_button("Print All Transactions", data=csv, file_name="all_transactions.csv", mime="text/csv")
+    else:
+        st.info("No transactions found.")
 
     elif page == "Admin Funding":
         st.header("Admin Funding")
