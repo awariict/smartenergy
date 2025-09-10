@@ -545,30 +545,31 @@ if user and user.get("role") == "admin":
                 st.success("User deleted.")
                 st.rerun()
                 
-    elif page == "Transaction Log":
-    st.header("Transaction Log (System-wide)")
+        elif page == "Transaction Log":
+        st.header("Transaction Log (System-wide)")
 
-    try:
-        txs = list(transactions_col.find({}).sort("timestamp", -1))
-    except Exception as e:
-        st.error(f"Error fetching transactions: {e}")
-        txs = list(transactions_col.find({}))  # fallback without sort
+        try:
+            txs = list(transactions_col.find({}).sort("timestamp", -1))
+        except Exception as e:
+            st.error(f"Error fetching transactions: {e}")
+            txs = list(transactions_col.find({}))  # fallback without sort
 
-    if txs:
-        tx_df = pd.DataFrame([{
-            "user": (users_col.find_one({"_id": t.get("user_id")}) or {}).get("username", "deleted_user"),
-            "timestamp": t.get('timestamp').strftime('%Y-%m-%d %H:%M:%S') if isinstance(t.get('timestamp'), datetime.datetime) else str(t.get('timestamp')),
-            "type": t.get('type'),
-            "amount": t.get('amount'),
-            "balance_after": t.get('balance_after')
-        } for t in txs])
+        if txs:
+            tx_df = pd.DataFrame([{
+                "user": (users_col.find_one({"_id": t.get("user_id")}) or {}).get("username", "deleted_user"),
+                "timestamp": t.get('timestamp').strftime('%Y-%m-%d %H:%M:%S') if isinstance(t.get('timestamp'), datetime.datetime) else str(t.get('timestamp')),
+                "type": t.get('type'),
+                "amount": t.get('amount'),
+                "balance_after": t.get('balance_after')
+            } for t in txs])
 
-        st.dataframe(tx_df)
+            st.dataframe(tx_df)
 
-        csv = tx_df.to_csv(index=False)
-        st.download_button("Print All Transactions", data=csv, file_name="all_transactions.csv", mime="text/csv")
-    else:
-        st.info("No transactions found.")
+            csv = tx_df.to_csv(index=False)
+            st.download_button("Print All Transactions", data=csv, file_name="all_transactions.csv", mime="text/csv")
+        else:
+            st.info("No transactions found.")
+
 
     elif page == "Admin Funding":
         st.header("Admin Funding")
