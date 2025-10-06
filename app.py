@@ -1,4 +1,3 @@
-# smart_energy_app_full.py
 import streamlit as st
 from pymongo import MongoClient, ReturnDocument
 from pymongo.errors import OperationFailure
@@ -33,10 +32,8 @@ def get_db():
         st.stop()
     db = client[DB_NAME]
     try:
-        # Ensure an index on timestamp for fast / safe sorting (descending)
         db.transactions.create_index([("timestamp", -1)], background=True)
     except Exception as e:
-        # Non-fatal: log to Streamlit so you can inspect
         st.warning(f"Could not create index on transactions.timestamp: {e}")
     return db
 
@@ -69,7 +66,6 @@ def user_can_borrow(user):
     return user.get("borrowed", 0.0) == 0.0 and user.get("funds", 0.0) == 0.0
 
 def user_has_funded_before(user):
-    # lightweight check
     return transactions_col.find_one({"user_id": user["_id"], "type": "fund"}) is not None
 
 def debt_repay(user):
@@ -110,7 +106,6 @@ def can_withdraw(user):
     return not user_has_debt(user) and user.get("funds", 0.0) > 0.0
 
 def max_withdraw_amount(user):
-    # Use aggregation to compute totals server-side (efficient & safe).
     def sum_amount(user_id, ttype):
         pipeline = [
             {"$match": {"user_id": user_id, "type": ttype, "amount": {"$exists": True}}},
@@ -120,7 +115,6 @@ def max_withdraw_amount(user):
             res = list(transactions_col.aggregate(pipeline))
             return float(res[0]["total"]) if res else 0.0
         except OperationFailure:
-            # fallback to a limited client-side sum (in case aggregation fails)
             docs = transactions_col.find({"user_id": user_id, "type": ttype}).limit(10000)
             return float(sum(d.get("amount", 0.0) for d in docs))
 
@@ -189,12 +183,7 @@ def authenticate_user(username, password):
         return user
     return None
 
-# ---------------------- Helper: safe transaction reads ----------------------
 def safe_find_transactions(filter_query=None, sort_field="timestamp", limit=None, projection=None):
-    """
-    Attempt to find transactions sorted by sort_field.
-    If OperationFailure occurs (e.g. sort memory/disk issues), fallback to restricted query.
-    """
     q = filter_query or {}
     try:
         cursor = transactions_col.find(q, projection=projection)
@@ -333,6 +322,8 @@ page = st.session_state["page"]
 USER_SIDEBAR = [
     ("Dashboard", "Dashboard"),
     ("Fund", "Fund"),
+    ("Borrow", "Borrow"),
+    ("Usage", "Usage"),
     ("Meter Details", "Meter Details"),
     ("User Info", "User Info"),
     ("Billing", "Billing"),
@@ -342,6 +333,7 @@ ADMIN_SIDEBAR = [
     ("Admin Info", "Admin Info"),
     ("Manage Users", "Manage Users"),
     ("Transaction Log", "Transaction Log"),
+    ("Debtors", "Debtors"),
     ("Admin Funding", "Admin Funding"),
     ("Logout", "Logout")
 ]
@@ -444,24 +436,7 @@ if user and user.get("role") != "admin":
                     appliances_col.update_one({"_id": a.get("_id")}, {"$set": {"is_on": bool(new_state), "manual_control": True}})
                     st.rerun()
                 st.markdown("</div>", unsafe_allow_html=True)
-        # Only allow borrow if user has previously funded
-        if user_can_borrow(user) and user_has_funded_before(user):
-            if st.button("Borrow Funds"):
-                users_col.update_one({"_id": user["_id"]}, {"$set": {"funds": BORROW_AMOUNT, "borrowed": BORROW_AMOUNT}})
-                transactions_col.insert_one({
-                    "user_id": user["_id"],
-                    "type": "borrow",
-                    "amount": BORROW_AMOUNT,
-                    "balance_after": BORROW_AMOUNT,
-                    "metadata": {"reason": "borrow"},
-                    "timestamp": datetime.datetime.utcnow()
-                })
-                st.success(f"You borrowed ₦{BORROW_AMOUNT:,.2f}. Please pay back when you fund your account!")
-                st.rerun()
-        elif user_can_borrow(user) and not user_has_funded_before(user):
-            st.info("You must fund your account at least once before you can borrow.")
-        elif user_has_debt(user) and user.get("funds",0.0)==0.0:
-            st.warning("Your account has zero funds and you are owing. Please fund your account to restore power.")
+        # Borrow moved to sidebar
 
     elif page == "Fund":
         st.header("Fund Account")
@@ -481,6 +456,7 @@ if user and user.get("role") != "admin":
             })
             debt_repay(updated)
             st.success(f"Added ₦{amount:,.2f} to your account.")
+            st.session_state["page"] = "Dashboard"
             st.rerun()
         st.subheader("Withdraw funds to bank account")
         withdraw_allowed = can_withdraw(user)
@@ -494,7 +470,6 @@ if user and user.get("role") != "admin":
                 withdraw_submit = st.form_submit_button("Withdraw")
             if withdraw_submit and withdraw_amount > 0:
                 users_col.update_one({"_id": user["_id"]}, {"$inc": {"funds": -withdraw_amount}})
-                # fetch updated funds to store accurate balance_after
                 updated = users_col.find_one({"_id": user["_id"]})
                 transactions_col.insert_one({
                     "user_id": user["_id"],
@@ -512,6 +487,56 @@ if user and user.get("role") != "admin":
                 st.rerun()
         elif not withdraw_allowed:
             st.info("You may only withdraw once per month and cannot withdraw borrowed funds.")
+
+    elif page == "Borrow":
+        st.header("Borrow Funds")
+        if user_can_borrow(user) and user_has_funded_before(user):
+            if st.button("Confirm Borrow", key="confirm_borrow_btn"):
+                users_col.update_one({"_id": user["_id"]}, {"$set": {"funds": BORROW_AMOUNT, "borrowed": BORROW_AMOUNT}})
+                transactions_col.insert_one({
+                    "user_id": user["_id"],
+                    "type": "borrow",
+                    "amount": BORROW_AMOUNT,
+                    "balance_after": BORROW_AMOUNT,
+                    "metadata": {"reason": "borrow"},
+                    "timestamp": datetime.datetime.utcnow()
+                })
+                st.success(f"You borrowed ₦{BORROW_AMOUNT:,.2f}. Please pay back when you fund your account!")
+                st.session_state["page"] = "Dashboard"
+                st.rerun()
+        elif user_can_borrow(user) and not user_has_funded_before(user):
+            st.info("You must fund your account at least once before you can borrow.")
+        elif user_has_debt(user):
+            st.warning("You are already owing. Please fund your account to restore power.")
+        else:
+            st.info("You cannot borrow at this time.")
+
+    elif page == "Usage":
+        st.header("Appliance Usage & Live Energy Consumption")
+        meter = meters_col.find_one({"meter_id": user.get("meter_id")})
+        apps = list(appliances_col.find({"meter_id": user.get("meter_id")}))
+        st.write(f"Total Meter kWh: {meter.get('total_energy_kwh',0.0):.4f}")
+        st.subheader("Appliances")
+        total_energy = 0.0
+        for a in apps:
+            total_energy += a.get("total_accum_kwh", 0.0)
+            st.write(f"{a['type'].title()} ({a['location']}): {a.get('total_accum_kwh',0.0):.4f} kWh")
+        st.write(f"**Total Appliance Energy Consumption:** {total_energy:.4f} kWh")
+        # Live graph using last 30 deductions
+        transactions = safe_find_transactions({"user_id": user["_id"], "type": "deduction"}, limit=30)
+        if transactions:
+            graph_data = []
+            for t in transactions:
+                graph_data.append({
+                    "timestamp": t["timestamp"],
+                    "energy": t.get("amount", 0.0) / PRICE_PER_KWH if PRICE_PER_KWH != 0 else 0
+                })
+            df = pd.DataFrame(graph_data)
+            df["timestamp"] = pd.to_datetime(df["timestamp"])
+            df = df.sort_values("timestamp")
+            st.line_chart(df.set_index("timestamp")["energy"])
+        else:
+            st.info("No energy consumption data to plot yet.")
 
     elif page == "Meter Details":
         meter = meters_col.find_one({"meter_id": user.get("meter_id")})
@@ -539,7 +564,6 @@ if user and user.get("role") != "admin":
         st.write(f"Meter ID: {meter.get('meter_id')}")
         st.write(f"Address: {meter.get('address')}")
         st.write(f"Meter total kWh: {meter.get('total_energy_kwh',0.0):.4f}")
-        # Use safe_find_transactions (limit to 1000 to be safe)
         transactions = safe_find_transactions({"user_id": user["_id"]}, limit=1000)
         st.subheader("Transactions")
         if transactions:
@@ -626,6 +650,15 @@ if user and user.get("role") == "admin":
         else:
             st.info("No transactions found.")
 
+    elif page == "Debtors":
+        st.header("Debtors List")
+        debtors = list(users_col.find({"role": "user", "borrowed": {"$gt": 0.0}}))
+        if debtors:
+            for d in debtors:
+                st.write(f"**{d.get('full_name')} ({d.get('username')})** - Owes: ₦{d.get('borrowed',0):,.2f}")
+        else:
+            st.info("No users are owing at this time.")
+
     elif page == "Admin Funding":
         st.header("Admin Funding")
         users_list = list(users_col.find({"role": "user"}))
@@ -635,7 +668,6 @@ if user and user.get("role") == "admin":
             fund_amount = cols[1].number_input(f"Fund for {u.get('username')}", min_value=0.0, step=100.0, key=f"admin_fund_{u.get('_id')}")
             if cols[1].button(f"Fund {u.get('username')}", key=f"admin_fund_btn_{u.get('_id')}"):
                 users_col.update_one({"_id": u["_id"]}, {"$inc": {"funds": fund_amount}})
-                # fetch updated funds for accurate balance
                 updated_u = users_col.find_one({"_id": u["_id"]})
                 transactions_col.insert_one({
                     "user_id": u["_id"],
