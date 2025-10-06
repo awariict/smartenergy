@@ -1,4 +1,4 @@
-# smart_energy_app_full.py (UPDATED)
+# smart_energy_app_full.py
 import streamlit as st
 from pymongo import MongoClient, ReturnDocument
 from pymongo.errors import OperationFailure
@@ -35,9 +35,9 @@ def get_db():
     try:
         # Ensure an index on timestamp for fast / safe sorting (descending)
         db.transactions.create_index([("timestamp", -1)], background=True)
-        db.consumption.create_index([("timestamp", -1)], background=True)
     except Exception as e:
-        st.warning(f"Could not create some indexes: {e}")
+        # Non-fatal: log to Streamlit so you can inspect
+        st.warning(f"Could not create index on transactions.timestamp: {e}")
     return db
 
 db = get_db()
@@ -45,7 +45,6 @@ users_col = db.users
 meters_col = db.meters
 appliances_col = db.appliances
 transactions_col = db.transactions
-consumption_col = db.consumption  # new collection for time-series consumption events
 
 # ---------------------- Utilities ----------------------
 def gen_meter_id():
@@ -70,6 +69,7 @@ def user_can_borrow(user):
     return user.get("borrowed", 0.0) == 0.0 and user.get("funds", 0.0) == 0.0
 
 def user_has_funded_before(user):
+    # lightweight check
     return transactions_col.find_one({"user_id": user["_id"], "type": "fund"}) is not None
 
 def debt_repay(user):
@@ -110,6 +110,7 @@ def can_withdraw(user):
     return not user_has_debt(user) and user.get("funds", 0.0) > 0.0
 
 def max_withdraw_amount(user):
+    # Use aggregation to compute totals server-side (efficient & safe).
     def sum_amount(user_id, ttype):
         pipeline = [
             {"$match": {"user_id": user_id, "type": ttype, "amount": {"$exists": True}}},
@@ -119,6 +120,7 @@ def max_withdraw_amount(user):
             res = list(transactions_col.aggregate(pipeline))
             return float(res[0]["total"]) if res else 0.0
         except OperationFailure:
+            # fallback to a limited client-side sum (in case aggregation fails)
             docs = transactions_col.find({"user_id": user_id, "type": ttype}).limit(10000)
             return float(sum(d.get("amount", 0.0) for d in docs))
 
@@ -189,6 +191,10 @@ def authenticate_user(username, password):
 
 # ---------------------- Helper: safe transaction reads ----------------------
 def safe_find_transactions(filter_query=None, sort_field="timestamp", limit=None, projection=None):
+    """
+    Attempt to find transactions sorted by sort_field.
+    If OperationFailure occurs (e.g. sort memory/disk issues), fallback to restricted query.
+    """
     q = filter_query or {}
     try:
         cursor = transactions_col.find(q, projection=projection)
@@ -210,7 +216,6 @@ def safe_find_transactions(filter_query=None, sort_field="timestamp", limit=None
 
 # ---------------------- Simulation ----------------------
 def _simulate_meter(user_id, stop_event):
-    # Simulation will also insert small consumption events into `consumption_col` so the Usage chart can read them.
     while not stop_event.is_set():
         user = users_col.find_one({"_id": user_id})
         if not user:
@@ -219,13 +224,9 @@ def _simulate_meter(user_id, stop_event):
         now = datetime.datetime.utcnow()
         if user.get("funds", 0.0) <= 0.0:
             turn_off_all_appliances(meter_id)
-            for _ in range(max(1, POLL_INTERVAL)):
-                if stop_event.is_set():
-                    break
-                time.sleep(1)
+            time.sleep(POLL_INTERVAL)
             continue
         appliances = list(appliances_col.find({"meter_id": meter_id}))
-        total_kwh_this_tick = 0.0
         for app in appliances:
             if app.get("manual_control", False):
                 is_on = app.get("is_on", False)
@@ -255,7 +256,6 @@ def _simulate_meter(user_id, stop_event):
             if is_on and user.get("funds", 0.0) > 0.0:
                 power_w = app.get("power_rating_w", 100)
                 kwh = (power_w / 1000.0) * (POLL_INTERVAL / 3600.0)
-                total_kwh_this_tick += kwh
                 appliances_col.update_one({"_id": app["_id"]}, {"$inc": {"total_accum_kwh": kwh, "session.accum_kwh_session": kwh}})
                 cost = kwh * PRICE_PER_KWH
                 updated = users_col.find_one_and_update(
@@ -270,7 +270,7 @@ def _simulate_meter(user_id, stop_event):
                         "type": "deduction",
                         "amount": float(cost),
                         "balance_after": float(balance_after),
-                        "metadata": {"appliance_id": app.get("appliance_id"), "appliance_type": app.get("type")},
+                        "metadata": {"appliance_id": app.get("appliance_id")},
                         "timestamp": now,
                     })
                     meters_col.update_one({"meter_id": meter_id}, {"$inc": {"total_energy_kwh": kwh}})
@@ -278,18 +278,6 @@ def _simulate_meter(user_id, stop_event):
                     appliances_col.update_one({"_id": app["_id"]}, {"$set": {"is_on": False}})
                     users_col.update_one({"_id": user_id}, {"$set": {"last_notification": "insufficient_funds"}})
                     turn_off_all_appliances(meter_id)
-        # write consumption event if any
-        if total_kwh_this_tick > 0:
-            try:
-                consumption_col.insert_one({
-                    "user_id": user_id,
-                    "meter_id": meter_id,
-                    "kwh": float(total_kwh_this_tick),
-                    "timestamp": now
-                })
-            except Exception:
-                # non-fatal
-                pass
         for _ in range(POLL_INTERVAL):
             if stop_event.is_set():
                 break
@@ -327,36 +315,12 @@ st.set_page_config(page_title="Smart Energy System", layout="centered")
 
 st.markdown("""
 <style>
-/* Background and general app styles */
 .stApp { background: linear-gradient(to right, #007BFF, #FFC107, #FF0000); }
-
-/* Sidebar customization */
 section[data-testid="stSidebar"] { background: black !important; }
-
-/* Container for sidebar content */
 .sidebar-content { display: flex; flex-direction: column; align-items: center; gap: 12px; margin-top: 20px; }
-
-/* Target all button elements inside our sidebar-content to make them uniform */
-section[data-testid="stSidebar"] .sidebar-content button,
-section[data-testid="stSidebar"] .sidebar-content .stButton button {
-    width: 180px !important;
-    height: 44px !important;
-    background-color: white !important;
-    color: black !important;
-    font-weight: bold !important;
-    border-radius: 8px !important;
-    border: none !important;
-    margin: 0 auto !important;
-    display: block !important;
-    font-size: 14px !important;
-}
-
-/* Make sure top-level cards look consistent */
+.sidebar-btn { width: 180px; height: 44px; background-color: white !important; color: black !important; font-weight: bold; border-radius: 8px; border: none; margin: 0 auto; display: block; }
 .big-font { font-size:20px !important; }
 .card { background: white;color: black !important; padding: 12px; border-radius: 8px; box-shadow: 0 2px 6px rgba(0,0,0,0.08); margin-bottom: 8px; }
-
-/* Make the dataframe / charts fit nicely */
-[data-testid="stDataFrame"] { background: rgba(255,255,255,0.95); border-radius: 8px; padding: 6px; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -364,19 +328,14 @@ if "user_id" not in st.session_state:
     st.session_state["user_id"] = None
 if "page" not in st.session_state:
     st.session_state["page"] = "Login"
-if "fund_confirmation" not in st.session_state:
-    st.session_state["fund_confirmation"] = None
 page = st.session_state["page"]
 
-# Sidebar items (include Usage and Borrow)
 USER_SIDEBAR = [
     ("Dashboard", "Dashboard"),
     ("Fund", "Fund"),
-    ("Usage", "Usage"),
     ("Meter Details", "Meter Details"),
     ("User Info", "User Info"),
     ("Billing", "Billing"),
-    ("Borrow", "Borrow"),
     ("Logout", "Logout")
 ]
 ADMIN_SIDEBAR = [
@@ -384,7 +343,6 @@ ADMIN_SIDEBAR = [
     ("Manage Users", "Manage Users"),
     ("Transaction Log", "Transaction Log"),
     ("Admin Funding", "Admin Funding"),
-    ("Usage", "Usage"),
     ("Logout", "Logout")
 ]
 
@@ -393,14 +351,9 @@ if st.session_state.get("user_id"):
     user = users_col.find_one({"_id": st.session_state["user_id"]})
     sidebar_items = ADMIN_SIDEBAR if user and user.get("role") == "admin" else USER_SIDEBAR
     st.sidebar.markdown("<div class='sidebar-content'>", unsafe_allow_html=True)
-    # Render buttons; clicking sets page and reruns
     for label, pageval in sidebar_items:
         if st.sidebar.button(label, key=f"sidebar_{label}"):
-            # Handle immediate special-case for borrow being clicked from sidebar
-            if pageval == "Borrow":
-                st.session_state["page"] = "Borrow"
-            else:
-                st.session_state["page"] = pageval
+            st.session_state["page"] = pageval
             st.rerun()
     st.sidebar.markdown("</div>", unsafe_allow_html=True)
 
@@ -460,11 +413,6 @@ if user and user.get("role") != "admin":
         meter = meters_col.find_one({"meter_id": user.get("meter_id")})
         st.header("Dashboard")
         st.write(f"Welcome, **{user.get('full_name')}**")
-        # Show fund confirmation if present
-        if st.session_state.get("fund_confirmation"):
-            st.success(st.session_state["fund_confirmation"])
-            # clear it after showing once
-            st.session_state["fund_confirmation"] = None
         st.write(f"Funds available: ₦{user.get('funds',0):,.2f}")
         st.write(f"Meter: {user.get('meter_id')}")
         st.write(f"Address: {user.get('address')}")
@@ -496,10 +444,9 @@ if user and user.get("role") != "admin":
                     appliances_col.update_one({"_id": a.get("_id")}, {"$set": {"is_on": bool(new_state), "manual_control": True}})
                     st.rerun()
                 st.markdown("</div>", unsafe_allow_html=True)
-
-        # Borrow button inline on dashboard (in addition to sidebar) for convenience
+        # Only allow borrow if user has previously funded
         if user_can_borrow(user) and user_has_funded_before(user):
-            if st.button("Borrow Funds (Quick)"):
+            if st.button("Borrow Funds"):
                 users_col.update_one({"_id": user["_id"]}, {"$set": {"funds": BORROW_AMOUNT, "borrowed": BORROW_AMOUNT}})
                 transactions_col.insert_one({
                     "user_id": user["_id"],
@@ -532,14 +479,9 @@ if user and user.get("role") != "admin":
                 "metadata": {"reason": "top_up"},
                 "timestamp": datetime.datetime.utcnow()
             })
-            # repay debt automatically if applicable
             debt_repay(updated)
-            # Instead of trying to sleep here (blocking), set a confirmation to be shown on Dashboard,
-            # change page to Dashboard so it automatically redirects user there and shows confirmation.
-            st.session_state["fund_confirmation"] = f"₦{float(amount):,.2f} has been successfully added to your wallet."
-            st.session_state["page"] = "Dashboard"
+            st.success(f"Added ₦{amount:,.2f} to your account.")
             st.rerun()
-
         st.subheader("Withdraw funds to bank account")
         withdraw_allowed = can_withdraw(user)
         max_amount = max_withdraw_amount(user)
@@ -552,6 +494,7 @@ if user and user.get("role") != "admin":
                 withdraw_submit = st.form_submit_button("Withdraw")
             if withdraw_submit and withdraw_amount > 0:
                 users_col.update_one({"_id": user["_id"]}, {"$inc": {"funds": -withdraw_amount}})
+                # fetch updated funds to store accurate balance_after
                 updated = users_col.find_one({"_id": user["_id"]})
                 transactions_col.insert_one({
                     "user_id": user["_id"],
@@ -569,57 +512,6 @@ if user and user.get("role") != "admin":
                 st.rerun()
         elif not withdraw_allowed:
             st.info("You may only withdraw once per month and cannot withdraw borrowed funds.")
-
-    elif page == "Usage":
-        st.header("Usage & Live Consumption")
-        st.write("All appliances for your meter and their total consumption (kWh).")
-        apps = list(appliances_col.find({"meter_id": user.get("meter_id")}))
-        rows = []
-        total_kwh = 0.0
-        for a in apps:
-            kwh = a.get("total_accum_kwh", 0.0)
-            rows.append({
-                "appliance_id": a.get("appliance_id"),
-                "type": a.get("type"),
-                "location": a.get("location"),
-                "total_kwh": round(kwh, 6),
-                "is_on": a.get("is_on", False)
-            })
-            total_kwh += kwh
-        st.subheader(f"Total energy consumed by meter: {total_kwh:.6f} kWh")
-        if rows:
-            df = pd.DataFrame(rows)
-            st.dataframe(df)
-            csv = df.to_csv(index=False)
-            st.download_button("Export appliance usage CSV", data=csv, file_name="appliance_usage.csv", mime="text/csv")
-        else:
-            st.info("No appliances found for this meter.")
-
-        st.markdown("---")
-        st.write("Live energy consumption (kWh) — latest events from simulation.")
-        # Fetch recent consumption events for this user (last N)
-        try:
-            raw_events = list(consumption_col.find({"user_id": user["_id"]}).sort("timestamp", -1).limit(200))
-            if raw_events:
-                # build series aggregated per second or per minute depending on data density
-                df_events = pd.DataFrame([{
-                    "timestamp": e.get("timestamp"),
-                    "kwh": e.get("kwh", 0.0)
-                } for e in raw_events])
-                # ensure datetime
-                df_events["timestamp"] = pd.to_datetime(df_events["timestamp"])
-                df_events = df_events.set_index("timestamp").sort_index()
-                # resample to 1-second or 15-second bins depending on frequency
-                if len(df_events) > 50:
-                    series = df_events["kwh"].resample("15S").sum()
-                else:
-                    series = df_events["kwh"].resample("S").sum()
-                series = series.fillna(0)
-                st.line_chart(series)
-            else:
-                st.info("No consumption events recorded yet. Start simulation or add funds.")
-        except Exception as e:
-            st.error(f"Error loading consumption series: {e}")
 
     elif page == "Meter Details":
         meter = meters_col.find_one({"meter_id": user.get("meter_id")})
@@ -647,6 +539,7 @@ if user and user.get("role") != "admin":
         st.write(f"Meter ID: {meter.get('meter_id')}")
         st.write(f"Address: {meter.get('address')}")
         st.write(f"Meter total kWh: {meter.get('total_energy_kwh',0.0):.4f}")
+        # Use safe_find_transactions (limit to 1000 to be safe)
         transactions = safe_find_transactions({"user_id": user["_id"]}, limit=1000)
         st.subheader("Transactions")
         if transactions:
@@ -673,30 +566,6 @@ if user and user.get("role") != "admin":
                 st.rerun()
         else:
             st.info("No transactions found.")
-
-    elif page == "Borrow":
-        st.header("Borrow Funds")
-        # Display eligibility and allow borrow
-        if user_can_borrow(user) and user_has_funded_before(user):
-            st.write("You are eligible to borrow.")
-            st.write(f"Amount available to borrow: ₦{BORROW_AMOUNT:,.2f}")
-            if st.button("Confirm Borrow"):
-                users_col.update_one({"_id": user["_id"]}, {"$set": {"funds": BORROW_AMOUNT, "borrowed": BORROW_AMOUNT}})
-                transactions_col.insert_one({
-                    "user_id": user["_id"],
-                    "type": "borrow",
-                    "amount": BORROW_AMOUNT,
-                    "balance_after": BORROW_AMOUNT,
-                    "metadata": {"reason": "borrow_sidebar"},
-                    "timestamp": datetime.datetime.utcnow()
-                })
-                st.success(f"You borrowed ₦{BORROW_AMOUNT:,.2f}. Please pay back when you fund your account!")
-                st.session_state["page"] = "Dashboard"
-                st.rerun()
-        elif user_can_borrow(user) and not user_has_funded_before(user):
-            st.info("You must fund your account at least once before you can borrow.")
-        else:
-            st.info("You are not eligible to borrow at this time (either you have debt or you already have funds).")
 
     elif page == "Logout":
         stop_simulation_session()
@@ -766,6 +635,7 @@ if user and user.get("role") == "admin":
             fund_amount = cols[1].number_input(f"Fund for {u.get('username')}", min_value=0.0, step=100.0, key=f"admin_fund_{u.get('_id')}")
             if cols[1].button(f"Fund {u.get('username')}", key=f"admin_fund_btn_{u.get('_id')}"):
                 users_col.update_one({"_id": u["_id"]}, {"$inc": {"funds": fund_amount}})
+                # fetch updated funds for accurate balance
                 updated_u = users_col.find_one({"_id": u["_id"]})
                 transactions_col.insert_one({
                     "user_id": u["_id"],
@@ -777,23 +647,6 @@ if user and user.get("role") == "admin":
                 })
                 st.success(f"Funded ₦{fund_amount:,.2f} to {u.get('username')}")
                 st.rerun()
-
-    elif page == "Usage":
-        st.header("Usage (Admin view)")
-        st.write("System-wide recent consumption aggregated by meter.")
-        # Simple recent aggregation of consumption events grouped by meter
-        try:
-            raw = list(consumption_col.find({}).sort("timestamp", -1).limit(500))
-            if raw:
-                df = pd.DataFrame([{"meter_id": r.get("meter_id"), "kwh": r.get("kwh", 0.0), "timestamp": r.get("timestamp")} for r in raw])
-                df["timestamp"] = pd.to_datetime(df["timestamp"])
-                agg = df.groupby("meter_id")["kwh"].sum().reset_index().rename(columns={"kwh":"total_kwh"})
-                st.dataframe(agg)
-                st.line_chart(df.set_index("timestamp").resample("15S").sum()["kwh"].fillna(0))
-            else:
-                st.info("No consumption events recorded yet.")
-        except Exception as e:
-            st.error(f"Error loading consumption events: {e}")
 
     elif page == "Logout":
         stop_simulation_session()
