@@ -307,23 +307,28 @@ st.markdown("""
 .stApp { background: linear-gradient(to right, #007BFF, #FFC107, #FF0000); }
 section[data-testid="stSidebar"] { background: black !important; }
 .sidebar-content { display: flex; flex-direction: column; align-items: center; gap: 12px; margin-top: 20px; }
-.sidebar-btn {
-    width: 180px;
-    height: 44px;
+[data-testid="stSidebar"] button[kind="secondary"], .sidebar-btn {
+    width: 180px !important;
+    min-width: 180px !important;
+    max-width: 180px !important;
+    height: 44px !important;
+    min-height: 44px !important;
+    max-height: 44px !important;
     background-color: white !important;
     color: black !important;
-    font-weight: bold;
-    border-radius: 8px;
-    border: none;
-    margin: 0 auto;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 16px;
-    cursor: pointer;
-    box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+    font-weight: bold !important;
+    border-radius: 8px !important;
+    border: none !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    margin: 0 auto 8px auto !important;
+    font-size: 16px !important;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.04) !important;
+    cursor: pointer !important;
 }
-.sidebar-btn.selected {
+[data-testid="stSidebar"] button[kind="secondary"]:active,
+[data-testid="stSidebar"] button[kind="secondary"]:focus {
     background: #007BFF !important;
     color: white !important;
 }
@@ -357,33 +362,16 @@ ADMIN_SIDEBAR = [
     ("Logout", "Logout")
 ]
 
-def render_sidebar(sidebar_items, selected_page):
-    st.sidebar.markdown('<div class="sidebar-content">', unsafe_allow_html=True)
-    for label, pageval in sidebar_items:
-        selected = "selected" if pageval == selected_page else ""
-        button_html = f"""
-        <form action="" method="post">
-            <button class="sidebar-btn {selected}" name="sidebar_{label}" type="submit">{label}</button>
-        </form>
-        """
-        st.sidebar.markdown(button_html, unsafe_allow_html=True)
-    st.sidebar.markdown('</div>', unsafe_allow_html=True)
-
-def get_sidebar_click():
-    for label, pageval in USER_SIDEBAR + ADMIN_SIDEBAR:
-        if f"sidebar_{label}" in st.session_state:
-            return pageval
-    return None
-
+user = None
 if st.session_state.get("user_id"):
     user = users_col.find_one({"_id": st.session_state["user_id"]})
     sidebar_items = ADMIN_SIDEBAR if user and user.get("role") == "admin" else USER_SIDEBAR
-    render_sidebar(sidebar_items, st.session_state["page"])
-
-clicked_page = get_sidebar_click()
-if clicked_page:
-    st.session_state["page"] = clicked_page
-    st.rerun()
+    st.sidebar.markdown("<div class='sidebar-content'>", unsafe_allow_html=True)
+    for label, pageval in sidebar_items:
+        if st.sidebar.button(label, key=f"sidebar_{label}"):
+            st.session_state["page"] = pageval
+            st.rerun()
+    st.sidebar.markdown("</div>", unsafe_allow_html=True)
 
 st.title("Intelligent Smart Energy System")
 st.write("Manage your simulated prepaid meter, appliances, and funds.")
@@ -435,297 +423,293 @@ elif page == "Login":
         st.rerun()
 
 # ---------------------- USER VIEWS ----------------------
-if st.session_state.get("user_id"):
-    user = users_col.find_one({"_id": st.session_state["user_id"]})
-    if user and user.get("role") != "admin":
+if user and user.get("role") != "admin":
 
-        if page == "Dashboard":
-            meter = meters_col.find_one({"meter_id": user.get("meter_id")})
-            st.header("Dashboard")
-            st.write(f"Welcome, **{user.get('full_name')}**")
-            st.write(f"Funds available: ₦{user.get('funds',0):,.2f}")
-            st.write(f"Meter: {user.get('meter_id')}")
-            st.write(f"Address: {user.get('address')}")
-            if user_has_debt(user):
-                st.warning(f"You owe ₦{user.get('borrowed',0):,.2f}. Please fund your account to repay.")
-            apps = list(appliances_col.find({"meter_id": user.get("meter_id")}))
-            st.subheader("Appliances")
-            total_on = sum(1 for a in apps if a.get("is_on"))
-            counts_room = {}
-            for a in apps:
-                counts_room.setdefault(a.get("location","unknown"), 0)
-                if a.get("is_on"):
-                    counts_room[a.get("location")] += 1
-            st.markdown(f"**Total appliances on:** {total_on}")
-            st.write("Appliances on by room:")
-            for loc, cnt in counts_room.items():
-                st.write(f"- {loc}: {cnt}")
-            for a in apps:
-                with st.container():
-                    st.markdown(f"<div class='card'><strong>{a['type'].title()} ({a['location']})</strong>", unsafe_allow_html=True)
-                    cols = st.columns([1,1,1,1])
-                    cols[0].write(f"ID: {a.get('appliance_id')}")
-                    cols[1].write(f"kWh total: {a.get('total_accum_kwh',0):.4f}")
-                    cols[2].write(f"Session kWh: {a.get('session',{}).get('accum_kwh_session',0):.4f}")
-                    toggle_key = f"toggle_{a.get('_id')}"
-                    disable_toggle = user.get("funds",0.0) <= 0.0 or user_has_debt(user)
-                    new_state = cols[3].checkbox("On", value=a.get('is_on', False), key=toggle_key, disabled=disable_toggle)
-                    if new_state != a.get('is_on', False) and not disable_toggle:
-                        appliances_col.update_one({"_id": a.get("_id")}, {"$set": {"is_on": bool(new_state), "manual_control": True}})
-                        st.rerun()
-                    st.markdown("</div>", unsafe_allow_html=True)
-            # Borrow moved to sidebar
+    if page == "Dashboard":
+        meter = meters_col.find_one({"meter_id": user.get("meter_id")})
+        st.header("Dashboard")
+        st.write(f"Welcome, **{user.get('full_name')}**")
+        st.write(f"Funds available: ₦{user.get('funds',0):,.2f}")
+        st.write(f"Meter: {user.get('meter_id')}")
+        st.write(f"Address: {user.get('address')}")
+        if user_has_debt(user):
+            st.warning(f"You owe ₦{user.get('borrowed',0):,.2f}. Please fund your account to repay.")
+        apps = list(appliances_col.find({"meter_id": user.get("meter_id")}))
+        st.subheader("Appliances")
+        total_on = sum(1 for a in apps if a.get("is_on"))
+        counts_room = {}
+        for a in apps:
+            counts_room.setdefault(a.get("location","unknown"), 0)
+            if a.get("is_on"):
+                counts_room[a.get("location")] += 1
+        st.markdown(f"**Total appliances on:** {total_on}")
+        st.write("Appliances on by room:")
+        for loc, cnt in counts_room.items():
+            st.write(f"- {loc}: {cnt}")
+        for a in apps:
+            with st.container():
+                st.markdown(f"<div class='card'><strong>{a['type'].title()} ({a['location']})</strong>", unsafe_allow_html=True)
+                cols = st.columns([1,1,1,1])
+                cols[0].write(f"ID: {a.get('appliance_id')}")
+                cols[1].write(f"kWh total: {a.get('total_accum_kwh',0):.4f}")
+                cols[2].write(f"Session kWh: {a.get('session',{}).get('accum_kwh_session',0):.4f}")
+                toggle_key = f"toggle_{a.get('_id')}"
+                disable_toggle = user.get("funds",0.0) <= 0.0 or user_has_debt(user)
+                new_state = cols[3].checkbox("On", value=a.get('is_on', False), key=toggle_key, disabled=disable_toggle)
+                if new_state != a.get('is_on', False) and not disable_toggle:
+                    appliances_col.update_one({"_id": a.get("_id")}, {"$set": {"is_on": bool(new_state), "manual_control": True}})
+                    st.rerun()
+                st.markdown("</div>", unsafe_allow_html=True)
+        # Borrow moved to sidebar
 
-        elif page == "Fund":
-            st.header("Fund Account")
-            with st.form("fund_form"):
-                amount = st.number_input("Top-up amount (₦)", min_value=0.0, value=0.0, step=100.0)
-                submitted = st.form_submit_button("Add funds")
-            if submitted and amount > 0:
-                users_col.update_one({"_id": user["_id"]}, {"$inc": {"funds": float(amount)}})
+    elif page == "Fund":
+        st.header("Fund Account")
+        with st.form("fund_form"):
+            amount = st.number_input("Top-up amount (₦)", min_value=0.0, value=0.0, step=100.0)
+            submitted = st.form_submit_button("Add funds")
+        if submitted and amount > 0:
+            users_col.update_one({"_id": user["_id"]}, {"$inc": {"funds": float(amount)}})
+            updated = users_col.find_one({"_id": user["_id"]})
+            transactions_col.insert_one({
+                "user_id": user["_id"],
+                "type": "fund",
+                "amount": float(amount),
+                "balance_after": float(updated.get("funds",0.0)),
+                "metadata": {"reason": "top_up"},
+                "timestamp": datetime.datetime.utcnow()
+            })
+            debt_repay(updated)
+            st.success(f"Added ₦{amount:,.2f} to your account.")
+            st.session_state["page"] = "Dashboard"
+            st.rerun()
+        st.subheader("Withdraw funds to bank account")
+        withdraw_allowed = can_withdraw(user)
+        max_amount = max_withdraw_amount(user)
+        if withdraw_allowed and max_amount > 0:
+            with st.form("withdraw_form"):
+                withdraw_amount = st.number_input("Amount to withdraw (₦)", min_value=0.0, max_value=max_amount, value=0.0, step=100.0)
+                account_name = st.text_input("Account Name")
+                account_number = st.text_input("Account Number")
+                bank_name = st.text_input("Bank Name")
+                withdraw_submit = st.form_submit_button("Withdraw")
+            if withdraw_submit and withdraw_amount > 0:
+                users_col.update_one({"_id": user["_id"]}, {"$inc": {"funds": -withdraw_amount}})
                 updated = users_col.find_one({"_id": user["_id"]})
                 transactions_col.insert_one({
                     "user_id": user["_id"],
-                    "type": "fund",
-                    "amount": float(amount),
-                    "balance_after": float(updated.get("funds",0.0)),
-                    "metadata": {"reason": "top_up"},
+                    "type": "withdraw",
+                    "amount": withdraw_amount,
+                    "balance_after": updated.get("funds",0.0),
+                    "metadata": {
+                        "account_name": account_name,
+                        "account_number": account_number,
+                        "bank_name": bank_name
+                    },
                     "timestamp": datetime.datetime.utcnow()
                 })
-                debt_repay(updated)
-                st.success(f"Added ₦{amount:,.2f} to your account.")
+                st.success(f"Withdrawn ₦{withdraw_amount:,.2f} to {bank_name} account {account_number}. You can only withdraw once a month.")
+                st.rerun()
+        elif not withdraw_allowed:
+            st.info("You may only withdraw once per month and cannot withdraw borrowed funds.")
+
+    elif page == "Borrow":
+        st.header("Borrow Funds")
+        if user_can_borrow(user) and user_has_funded_before(user):
+            if st.button("Confirm Borrow", key="confirm_borrow_btn"):
+                users_col.update_one({"_id": user["_id"]}, {"$set": {"funds": BORROW_AMOUNT, "borrowed": BORROW_AMOUNT}})
+                transactions_col.insert_one({
+                    "user_id": user["_id"],
+                    "type": "borrow",
+                    "amount": BORROW_AMOUNT,
+                    "balance_after": BORROW_AMOUNT,
+                    "metadata": {"reason": "borrow"},
+                    "timestamp": datetime.datetime.utcnow()
+                })
+                st.success(f"You borrowed ₦{BORROW_AMOUNT:,.2f}. Please pay back when you fund your account!")
                 st.session_state["page"] = "Dashboard"
                 st.rerun()
-            st.subheader("Withdraw funds to bank account")
-            withdraw_allowed = can_withdraw(user)
-            max_amount = max_withdraw_amount(user)
-            if withdraw_allowed and max_amount > 0:
-                with st.form("withdraw_form"):
-                    withdraw_amount = st.number_input("Amount to withdraw (₦)", min_value=0.0, max_value=max_amount, value=0.0, step=100.0)
-                    account_name = st.text_input("Account Name")
-                    account_number = st.text_input("Account Number")
-                    bank_name = st.text_input("Bank Name")
-                    withdraw_submit = st.form_submit_button("Withdraw")
-                if withdraw_submit and withdraw_amount > 0:
-                    users_col.update_one({"_id": user["_id"]}, {"$inc": {"funds": -withdraw_amount}})
-                    updated = users_col.find_one({"_id": user["_id"]})
-                    transactions_col.insert_one({
-                        "user_id": user["_id"],
-                        "type": "withdraw",
-                        "amount": withdraw_amount,
-                        "balance_after": updated.get("funds",0.0),
-                        "metadata": {
-                            "account_name": account_name,
-                            "account_number": account_number,
-                            "bank_name": bank_name
-                        },
-                        "timestamp": datetime.datetime.utcnow()
-                    })
-                    st.success(f"Withdrawn ₦{withdraw_amount:,.2f} to {bank_name} account {account_number}. You can only withdraw once a month.")
-                    st.rerun()
-            elif not withdraw_allowed:
-                st.info("You may only withdraw once per month and cannot withdraw borrowed funds.")
+        elif user_can_borrow(user) and not user_has_funded_before(user):
+            st.info("You must fund your account at least once before you can borrow.")
+        elif user_has_debt(user):
+            st.warning("You are already owing. Please fund your account to restore power.")
+        else:
+            st.info("You cannot borrow at this time.")
 
-        elif page == "Borrow":
-            st.header("Borrow Funds")
-            if user_can_borrow(user) and user_has_funded_before(user):
-                if st.button("Confirm Borrow", key="confirm_borrow_btn"):
-                    users_col.update_one({"_id": user["_id"]}, {"$set": {"funds": BORROW_AMOUNT, "borrowed": BORROW_AMOUNT}})
-                    transactions_col.insert_one({
-                        "user_id": user["_id"],
-                        "type": "borrow",
-                        "amount": BORROW_AMOUNT,
-                        "balance_after": BORROW_AMOUNT,
-                        "metadata": {"reason": "borrow"},
-                        "timestamp": datetime.datetime.utcnow()
-                    })
-                    st.success(f"You borrowed ₦{BORROW_AMOUNT:,.2f}. Please pay back when you fund your account!")
-                    st.session_state["page"] = "Dashboard"
-                    st.rerun()
-            elif user_can_borrow(user) and not user_has_funded_before(user):
-                st.info("You must fund your account at least once before you can borrow.")
-            elif user_has_debt(user):
-                st.warning("You are already owing. Please fund your account to restore power.")
-            else:
-                st.info("You cannot borrow at this time.")
+    elif page == "Usage":
+        st.header("Appliance Usage & Live Energy Consumption")
+        meter = meters_col.find_one({"meter_id": user.get("meter_id")})
+        apps = list(appliances_col.find({"meter_id": user.get("meter_id")}))
+        st.write(f"Total Meter kWh: {meter.get('total_energy_kwh',0.0):.4f}")
+        st.subheader("Appliances")
+        total_energy = 0.0
+        for a in apps:
+            total_energy += a.get("total_accum_kwh", 0.0)
+            st.write(f"{a['type'].title()} ({a['location']}): {a.get('total_accum_kwh',0.0):.4f} kWh")
+        st.write(f"**Total Appliance Energy Consumption:** {total_energy:.4f} kWh")
+        # Live graph using last 30 deductions
+        transactions = safe_find_transactions({"user_id": user["_id"], "type": "deduction"}, limit=30)
+        if transactions:
+            graph_data = []
+            for t in transactions:
+                graph_data.append({
+                    "timestamp": t["timestamp"],
+                    "energy": t.get("amount", 0.0) / PRICE_PER_KWH if PRICE_PER_KWH != 0 else 0
+                })
+            df = pd.DataFrame(graph_data)
+            df["timestamp"] = pd.to_datetime(df["timestamp"])
+            df = df.sort_values("timestamp")
+            st.line_chart(df.set_index("timestamp")["energy"])
+        else:
+            st.info("No energy consumption data to plot yet.")
 
-        elif page == "Usage":
-            st.header("Appliance Usage & Live Energy Consumption")
-            meter = meters_col.find_one({"meter_id": user.get("meter_id")})
-            apps = list(appliances_col.find({"meter_id": user.get("meter_id")}))
-            st.write(f"Total Meter kWh: {meter.get('total_energy_kwh',0.0):.4f}")
-            st.subheader("Appliances")
-            total_energy = 0.0
-            for a in apps:
-                total_energy += a.get("total_accum_kwh", 0.0)
-                st.write(f"{a['type'].title()} ({a['location']}): {a.get('total_accum_kwh',0.0):.4f} kWh")
-            st.write(f"**Total Appliance Energy Consumption:** {total_energy:.4f} kWh")
-            # Live graph using last 30 deductions
-            transactions = safe_find_transactions({"user_id": user["_id"], "type": "deduction"}, limit=30)
-            if transactions:
-                graph_data = []
-                for t in transactions:
-                    graph_data.append({
-                        "timestamp": t["timestamp"],
-                        "energy": t.get("amount", 0.0) / PRICE_PER_KWH if PRICE_PER_KWH != 0 else 0
-                    })
-                df = pd.DataFrame(graph_data)
-                df["timestamp"] = pd.to_datetime(df["timestamp"])
-                df = df.sort_values("timestamp")
-                st.line_chart(df.set_index("timestamp")["energy"])
-            else:
-                st.info("No energy consumption data to plot yet.")
+    elif page == "Meter Details":
+        meter = meters_col.find_one({"meter_id": user.get("meter_id")})
+        st.header("Meter Details")
+        st.write(f"Meter Name: {user.get('full_name')}")
+        st.write(f"Meter ID: {meter.get('meter_id')}")
+        st.write(f"Address: {meter.get('address')}")
+        st.write(f"Total Meter kWh: {meter.get('total_energy_kwh',0.0):.4f}")
 
-        elif page == "Meter Details":
-            meter = meters_col.find_one({"meter_id": user.get("meter_id")})
-            st.header("Meter Details")
-            st.write(f"Meter Name: {user.get('full_name')}")
-            st.write(f"Meter ID: {meter.get('meter_id')}")
-            st.write(f"Address: {meter.get('address')}")
-            st.write(f"Total Meter kWh: {meter.get('total_energy_kwh',0.0):.4f}")
+    elif page == "User Info":
+        st.header("User Info")
+        st.write(f"Full Name: {user.get('full_name')}")
+        st.write(f"Email: {user.get('email')}")
+        st.write(f"Phone: {user.get('phone')}")
+        st.write(f"Username: {user.get('username')}")
+        st.write(f"Address: {user.get('address')}")
+        st.info("You cannot change your details.")
 
-        elif page == "User Info":
-            st.header("User Info")
-            st.write(f"Full Name: {user.get('full_name')}")
-            st.write(f"Email: {user.get('email')}")
-            st.write(f"Phone: {user.get('phone')}")
-            st.write(f"Username: {user.get('username')}")
-            st.write(f"Address: {user.get('address')}")
-            st.info("You cannot change your details.")
+    elif page == "Billing":
+        meter = meters_col.find_one({"meter_id": user.get("meter_id")})
+        st.header("Billing")
+        st.write(f"Name: {user.get('full_name')}")
+        st.write(f"Email: {user.get('email')}")
+        st.write(f"Phone: {user.get('phone')}")
+        st.write(f"Meter ID: {meter.get('meter_id')}")
+        st.write(f"Address: {meter.get('address')}")
+        st.write(f"Meter total kWh: {meter.get('total_energy_kwh',0.0):.4f}")
+        transactions = safe_find_transactions({"user_id": user["_id"]}, limit=1000)
+        st.subheader("Transactions")
+        if transactions:
+            rows = []
+            for t in transactions:
+                ts = t.get("timestamp")
+                if not isinstance(ts, datetime.datetime):
+                    try:
+                        ts = pd.to_datetime(ts)
+                    except Exception:
+                        ts = None
+                rows.append({
+                    "timestamp": ts.strftime('%Y-%m-%d %H:%M:%S') if isinstance(ts, datetime.datetime) else "unknown",
+                    "type": t.get("type"),
+                    "amount": t.get("amount", 0.0),
+                    "balance_after": t.get("balance_after", 0.0)
+                })
+            tx_df = pd.DataFrame(rows)
+            st.dataframe(tx_df)
+            csv = tx_df.to_csv(index=False)
+            st.download_button("Print Transactions", data=csv, file_name="transactions.csv", mime="text/csv")
+            if st.button("Withdraw Funds (Shortcut)", key="withdraw_from_billing"):
+                st.session_state["page"] = "Fund"
+                st.rerun()
+        else:
+            st.info("No transactions found.")
 
-        elif page == "Billing":
-            meter = meters_col.find_one({"meter_id": user.get("meter_id")})
-            st.header("Billing")
-            st.write(f"Name: {user.get('full_name')}")
-            st.write(f"Email: {user.get('email')}")
-            st.write(f"Phone: {user.get('phone')}")
-            st.write(f"Meter ID: {meter.get('meter_id')}")
-            st.write(f"Address: {meter.get('address')}")
-            st.write(f"Meter total kWh: {meter.get('total_energy_kwh',0.0):.4f}")
-            transactions = safe_find_transactions({"user_id": user["_id"]}, limit=1000)
-            st.subheader("Transactions")
-            if transactions:
-                rows = []
-                for t in transactions:
-                    ts = t.get("timestamp")
-                    if not isinstance(ts, datetime.datetime):
-                        try:
-                            ts = pd.to_datetime(ts)
-                        except Exception:
-                            ts = None
-                    rows.append({
-                        "timestamp": ts.strftime('%Y-%m-%d %H:%M:%S') if isinstance(ts, datetime.datetime) else "unknown",
-                        "type": t.get("type"),
-                        "amount": t.get("amount", 0.0),
-                        "balance_after": t.get("balance_after", 0.0)
-                    })
-                tx_df = pd.DataFrame(rows)
-                st.dataframe(tx_df)
-                csv = tx_df.to_csv(index=False)
-                st.download_button("Print Transactions", data=csv, file_name="transactions.csv", mime="text/csv")
-                if st.button("Withdraw Funds (Shortcut)", key="withdraw_from_billing"):
-                    st.session_state["page"] = "Fund"
-                    st.rerun()
-            else:
-                st.info("No transactions found.")
-
-        elif page == "Logout":
-            stop_simulation_session()
-            st.session_state["user_id"] = None
-            st.session_state["page"] = "Login"
-            st.success("Logged out")
-            st.rerun()
+    elif page == "Logout":
+        stop_simulation_session()
+        st.session_state["user_id"] = None
+        st.session_state["page"] = "Login"
+        st.success("Logged out")
+        st.rerun()
 
 # ---------------------- ADMIN VIEWS ----------------------
-if st.session_state.get("user_id"):
-    user = users_col.find_one({"_id": st.session_state["user_id"]})
-    if user and user.get("role") == "admin":
+if user and user.get("role") == "admin":
 
-        if page == "Admin Info":
-            st.header("Admin Info")
-            st.write(f"Admin Name: {user.get('full_name')}")
-            st.write(f"Email: {user.get('email')}")
-            st.write(f"Phone: {user.get('phone')}")
-            st.write(f"Username: {user.get('username')}")
-            st.info("Admin details cannot be deleted.")
+    if page == "Admin Info":
+        st.header("Admin Info")
+        st.write(f"Admin Name: {user.get('full_name')}")
+        st.write(f"Email: {user.get('email')}")
+        st.write(f"Phone: {user.get('phone')}")
+        st.write(f"Username: {user.get('username')}")
+        st.info("Admin details cannot be deleted.")
 
-        elif page == "Manage Users":
-            st.header("Manage Users")
-            users_list = list(users_col.find({"role": "user"}))
-            for u in users_list:
-                cols = st.columns([3,1])
-                cols[0].write(f"{u.get('full_name')} ({u.get('username')}) - {u.get('email')}")
-                if cols[1].button("Delete", key=f"del_{u.get('_id')}"):
-                    users_col.delete_one({"_id": u.get('_id')})
-                    meters_col.update_many({"user_id": u.get('_id')}, {"$set": {"status": "deleted"}})
-                    appliances_col.delete_many({"meter_id": u.get('meter_id')})
-                    st.success("User deleted.")
-                    st.rerun()
+    elif page == "Manage Users":
+        st.header("Manage Users")
+        users_list = list(users_col.find({"role": "user"}))
+        for u in users_list:
+            cols = st.columns([3,1])
+            cols[0].write(f"{u.get('full_name')} ({u.get('username')}) - {u.get('email')}")
+            if cols[1].button("Delete", key=f"del_{u.get('_id')}"):
+                users_col.delete_one({"_id": u.get('_id')})
+                meters_col.update_many({"user_id": u.get('_id')}, {"$set": {"status": "deleted"}})
+                appliances_col.delete_many({"meter_id": u.get('meter_id')})
+                st.success("User deleted.")
+                st.rerun()
 
-        elif page == "Transaction Log":
-            st.header("Transaction Log (System-wide)")
-            txs = safe_find_transactions({}, limit=2000)
-            if txs:
-                rows = []
-                for t in txs:
-                    uid = t.get("user_id")
-                    uname = (users_col.find_one({"_id": uid}) or {}).get("username", "deleted_user")
-                    ts = t.get("timestamp")
-                    if not isinstance(ts, datetime.datetime):
-                        try:
-                            ts = pd.to_datetime(ts)
-                        except Exception:
-                            ts = None
-                    rows.append({
-                        "user": uname,
-                        "timestamp": ts.strftime('%Y-%m-%d %H:%M:%S') if isinstance(ts, datetime.datetime) else "unknown",
-                        "type": t.get("type"),
-                        "amount": t.get("amount", 0.0),
-                        "balance_after": t.get("balance_after", 0.0)
-                    })
-                tx_df = pd.DataFrame(rows)
-                st.dataframe(tx_df)
-                csv = tx_df.to_csv(index=False)
-                st.download_button("Print All Transactions", data=csv, file_name="all_transactions.csv", mime="text/csv")
-            else:
-                st.info("No transactions found.")
+    elif page == "Transaction Log":
+        st.header("Transaction Log (System-wide)")
+        txs = safe_find_transactions({}, limit=2000)
+        if txs:
+            rows = []
+            for t in txs:
+                uid = t.get("user_id")
+                uname = (users_col.find_one({"_id": uid}) or {}).get("username", "deleted_user")
+                ts = t.get("timestamp")
+                if not isinstance(ts, datetime.datetime):
+                    try:
+                        ts = pd.to_datetime(ts)
+                    except Exception:
+                        ts = None
+                rows.append({
+                    "user": uname,
+                    "timestamp": ts.strftime('%Y-%m-%d %H:%M:%S') if isinstance(ts, datetime.datetime) else "unknown",
+                    "type": t.get("type"),
+                    "amount": t.get("amount", 0.0),
+                    "balance_after": t.get("balance_after", 0.0)
+                })
+            tx_df = pd.DataFrame(rows)
+            st.dataframe(tx_df)
+            csv = tx_df.to_csv(index=False)
+            st.download_button("Print All Transactions", data=csv, file_name="all_transactions.csv", mime="text/csv")
+        else:
+            st.info("No transactions found.")
 
-        elif page == "Debtors":
-            st.header("Debtors List")
-            debtors = list(users_col.find({"role": "user", "borrowed": {"$gt": 0.0}}))
-            if debtors:
-                for d in debtors:
-                    st.write(f"**{d.get('full_name')} ({d.get('username')})** - Owes: ₦{d.get('borrowed',0):,.2f}")
-            else:
-                st.info("No users are owing at this time.")
+    elif page == "Debtors":
+        st.header("Debtors List")
+        debtors = list(users_col.find({"role": "user", "borrowed": {"$gt": 0.0}}))
+        if debtors:
+            for d in debtors:
+                st.write(f"**{d.get('full_name')} ({d.get('username')})** - Owes: ₦{d.get('borrowed',0):,.2f}")
+        else:
+            st.info("No users are owing at this time.")
 
-        elif page == "Admin Funding":
-            st.header("Admin Funding")
-            users_list = list(users_col.find({"role": "user"}))
-            for u in users_list:
-                cols = st.columns([3,1])
-                cols[0].write(f"{u.get('full_name')} ({u.get('username')}) - ₦{u.get('funds',0):,.2f}")
-                fund_amount = cols[1].number_input(f"Fund for {u.get('username')}", min_value=0.0, step=100.0, key=f"admin_fund_{u.get('_id')}")
-                if cols[1].button(f"Fund {u.get('username')}", key=f"admin_fund_btn_{u.get('_id')}"):
-                    users_col.update_one({"_id": u["_id"]}, {"$inc": {"funds": fund_amount}})
-                    updated_u = users_col.find_one({"_id": u["_id"]})
-                    transactions_col.insert_one({
-                        "user_id": u["_id"],
-                        "type": "fund",
-                        "amount": fund_amount,
-                        "balance_after": updated_u.get("funds",0.0),
-                        "metadata": {"reason": "admin_top_up"},
-                        "timestamp": datetime.datetime.utcnow()
-                    })
-                    st.success(f"Funded ₦{fund_amount:,.2f} to {u.get('username')}")
-                    st.rerun()
+    elif page == "Admin Funding":
+        st.header("Admin Funding")
+        users_list = list(users_col.find({"role": "user"}))
+        for u in users_list:
+            cols = st.columns([3,1])
+            cols[0].write(f"{u.get('full_name')} ({u.get('username')}) - ₦{u.get('funds',0):,.2f}")
+            fund_amount = cols[1].number_input(f"Fund for {u.get('username')}", min_value=0.0, step=100.0, key=f"admin_fund_{u.get('_id')}")
+            if cols[1].button(f"Fund {u.get('username')}", key=f"admin_fund_btn_{u.get('_id')}"):
+                users_col.update_one({"_id": u["_id"]}, {"$inc": {"funds": fund_amount}})
+                updated_u = users_col.find_one({"_id": u["_id"]})
+                transactions_col.insert_one({
+                    "user_id": u["_id"],
+                    "type": "fund",
+                    "amount": fund_amount,
+                    "balance_after": updated_u.get("funds",0.0),
+                    "metadata": {"reason": "admin_top_up"},
+                    "timestamp": datetime.datetime.utcnow()
+                })
+                st.success(f"Funded ₦{fund_amount:,.2f} to {u.get('username')}")
+                st.rerun()
 
-        elif page == "Logout":
-            stop_simulation_session()
-            st.session_state["user_id"] = None
-            st.session_state["page"] = "Login"
-            st.success("Logged out")
-            st.rerun()
+    elif page == "Logout":
+        stop_simulation_session()
+        st.session_state["user_id"] = None
+        st.session_state["page"] = "Login"
+        st.success("Logged out")
+        st.rerun()
 
 st.markdown("---")
 st.write("Developed by: Happiness Sunday Eyeh.")
