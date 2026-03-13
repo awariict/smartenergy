@@ -12,7 +12,11 @@ import uuid
 import pandas as pd
 import numpy as np
 from sklearn.linear_model import LinearRegression
+from sklearn.ensemble import RandomForestRegressor
 from sklearn.preprocessing import StandardScaler
+import plotly.graph_objects as go
+import plotly.express as px
+from scipy import stats
 
 # ---------------------- Configuration ----------------------
 MONGO_URI = st.secrets.get(
@@ -46,9 +50,9 @@ meters_col = db.meters
 appliances_col = db.appliances
 transactions_col = db.transactions
 
-# ---------------------- Forecasting Functions ----------------------
-def prepare_consumption_data(user_id, days_back=30):
-    """Prepare consumption data for forecasting from recent transactions."""
+# ---------------------- Professional Forecasting Functions ----------------------
+def prepare_consumption_data(user_id, days_back=90):
+    """Prepare comprehensive consumption data for forecasting."""
     try:
         cutoff_date = datetime.datetime.utcnow() - datetime.timedelta(days=days_back)
         transactions = list(transactions_col.find({
@@ -57,68 +61,255 @@ def prepare_consumption_data(user_id, days_back=30):
             "timestamp": {"$gte": cutoff_date}
         }).sort("timestamp", 1))
         
-        if len(transactions) < 5:
+        if len(transactions) < 10:
             return None
         
         data = []
         for t in transactions:
             energy_kwh = t.get("amount", 0.0) / PRICE_PER_KWH if PRICE_PER_KWH != 0 else 0
+            ts = t["timestamp"]
             data.append({
-                "timestamp": t["timestamp"],
-                "energy": energy_kwh
+                "timestamp": ts,
+                "energy": energy_kwh,
+                "cost": t.get("amount", 0.0),
+                "hour": ts.hour,
+                "day": ts.day,
+                "month": ts.month,
+                "day_of_week": ts.weekday(),
+                "week": ts.isocalendar()[1]
             })
         
-        return pd.DataFrame(data)
+        df = pd.DataFrame(data)
+        df['timestamp'] = pd.to_datetime(df['timestamp'])
+        return df.sort_values('timestamp').reset_index(drop=True)
     except Exception as e:
         st.warning(f"Error preparing consumption data: {e}")
         return None
 
-def forecast_consumption(consumption_df, periods=7):
-    """Forecast energy consumption for next N periods using linear regression."""
+def calculate_consumption_stats(df):
+    """Calculate comprehensive consumption statistics."""
+    if df is None or len(df) == 0:
+        return None
+    
+    stats_dict = {
+        "total_energy_kwh": df['energy'].sum(),
+        "total_cost": df['cost'].sum(),
+        "avg_daily_kwh": df.groupby(df['timestamp'].dt.date)['energy'].sum().mean(),
+        "avg_daily_cost": df.groupby(df['timestamp'].dt.date)['cost'].sum().mean(),
+        "max_daily_kwh": df.groupby(df['timestamp'].dt.date)['energy'].sum().max(),
+        "min_daily_kwh": df.groupby(df['timestamp'].dt.date)['energy'].sum().min(),
+        "std_daily_kwh": df.groupby(df['timestamp'].dt.date)['energy'].sum().std(),
+        "peak_hour": df.groupby('hour')['energy'].mean().idxmax(),
+        "off_peak_hour": df.groupby('hour')['energy'].mean().idxmin(),
+        "most_active_day": df['day_of_week'].mode()[0] if len(df) > 0 else 0,
+    }
+    return stats_dict
+
+def forecast_arima_style(df, periods=30):
+    """Advanced forecasting using ensemble approach."""
     try:
-        if consumption_df is None or len(consumption_df) < 5:
-            return None
+        if df is None or len(df) < 20:
+            return None, None
         
-        consumption_df = consumption_df.copy()
-        consumption_df['timestamp'] = pd.to_datetime(consumption_df['timestamp'])
-        consumption_df = consumption_df.sort_values('timestamp')
+        # Prepare features
+        df_copy = df.copy()
+        df_copy['date_numeric'] = (df_copy['timestamp'] - df_copy['timestamp'].min()).dt.total_seconds() / 86400
         
-        # Create time-based features
-        consumption_df['days_elapsed'] = (consumption_df['timestamp'] - consumption_df['timestamp'].min()).dt.total_seconds() / (24 * 3600)
-        consumption_df['hour'] = consumption_df['timestamp'].dt.hour
-        consumption_df['day_of_week'] = consumption_df['timestamp'].dt.dayofweek
+        # Calculate lagged features
+        df_copy['lag_1'] = df_copy['energy'].shift(1)
+        df_copy['lag_7'] = df_copy['energy'].shift(7)
+        df_copy['rolling_mean_7'] = df_copy['energy'].rolling(7).mean()
+        df_copy['rolling_std_7'] = df_copy['energy'].rolling(7).std()
         
-        # Prepare features and target
-        X = consumption_df[['days_elapsed', 'hour', 'day_of_week']].values
-        y = consumption_df['energy'].values
+        df_copy = df_copy.dropna()
         
-        # Train model
-        model = LinearRegression()
-        model.fit(X, y)
+        # Features
+        feature_cols = ['date_numeric', 'hour', 'day_of_week', 'lag_1', 'lag_7', 'rolling_mean_7', 'rolling_std_7']
+        X = df_copy[feature_cols].values
+        y = df_copy['energy'].values
         
-        # Generate future predictions
-        last_day = consumption_df['days_elapsed'].max()
-        future_predictions = []
+        # Train ensemble models
+        lr_model = LinearRegression()
+        rf_model = RandomForestRegressor(n_estimators=100, max_depth=10, random_state=42)
+        
+        lr_model.fit(X, y)
+        rf_model.fit(X, y)
+        
+        # Generate forecasts
+        last_date = df_copy['timestamp'].max()
+        last_numeric = df_copy['date_numeric'].max()
+        last_energy = df_copy['energy'].values[-1]
+        
+        forecasts_lr = []
+        forecasts_rf = []
+        forecast_timestamps = []
         
         for i in range(1, periods + 1):
-            future_day = last_day + i
-            future_hour = (consumption_df['timestamp'].max().hour + i) % 24
-            future_dow = (consumption_df['timestamp'].max().dayofweek + (i // 24)) % 7
+            future_date = last_date + datetime.timedelta(days=i)
+            future_numeric = last_numeric + i
+            future_hour = future_date.hour
+            future_dow = future_date.weekday()
             
-            X_future = np.array([[future_day, future_hour, future_dow]])
-            pred = model.predict(X_future)[0]
-            future_predictions.append(max(0, pred))  # Ensure non-negative
+            X_future = np.array([[future_numeric, future_hour, future_dow, last_energy, last_energy, last_energy, 0.1]])
+            
+            pred_lr = lr_model.predict(X_future)[0]
+            pred_rf = rf_model.predict(X_future)[0]
+            
+            # Ensemble average
+            forecast = (pred_lr * 0.4 + pred_rf * 0.6)
+            forecast = max(0, forecast)
+            
+            forecasts_lr.append(pred_lr)
+            forecasts_rf.append(pred_rf)
+            forecast_timestamps.append(future_date)
         
-        return future_predictions
+        forecast_df = pd.DataFrame({
+            'timestamp': forecast_timestamps,
+            'forecast': forecasts_lr,
+            'forecast_rf': forecasts_rf,
+            'ensemble_forecast': [(l * 0.4 + r * 0.6) for l, r in zip(forecasts_lr, forecasts_rf)]
+        })
+        
+        return forecast_df, {'lr': lr_model, 'rf': rf_model}
     except Exception as e:
-        st.warning(f"Error in forecasting: {e}")
-        return None
+        st.warning(f"Forecasting error: {e}")
+        return None, None
 
-def get_forecast_cost(forecast_values):
-    """Calculate total forecasted cost from energy values."""
-    if not forecast_values:
-        return 0.0
-    return sum(forecast_values) * PRICE_PER_KWH
+def get_customer_standing(user, consumption_stats, forecast_df):
+    """Calculate comprehensive customer standing."""
+    current_funds = user.get("funds", 0.0)
+    borrowed = user.get("borrowed", 0.0)
+    
+    if forecast_df is not None and len(forecast_df) > 0:
+        monthly_forecast_cost = forecast_df['ensemble_forecast'].sum() * PRICE_PER_KWH
+    else:
+        monthly_forecast_cost = 0.0
+    
+    if consumption_stats and consumption_stats['avg_daily_cost'] > 0:
+        days_until_depleted = current_funds / consumption_stats['avg_daily_cost'] if consumption_stats['avg_daily_cost'] > 0 else 999
+    else:
+        days_until_depleted = 999
+    
+    standing = {
+        "current_funds": current_funds,
+        "borrowed_amount": borrowed,
+        "net_position": current_funds - borrowed,
+        "monthly_forecast_cost": monthly_forecast_cost,
+        "days_until_depletion": max(0, days_until_depleted),
+        "is_solvent": (current_funds - borrowed) >= 0,
+        "status": "SOLVENT" if (current_funds - borrowed) >= 0 else "INSOLVENT"
+    }
+    
+    return standing
+
+def generate_weekly_forecast(forecast_df):
+    """Generate weekly forecast from daily forecast."""
+    if forecast_df is None or len(forecast_df) == 0:
+        return None
+    
+    forecast_df_copy = forecast_df.copy()
+    forecast_df_copy['timestamp'] = pd.to_datetime(forecast_df_copy['timestamp'])
+    forecast_df_copy['week'] = forecast_df_copy['timestamp'].dt.isocalendar().week
+    
+    weekly = forecast_df_copy.groupby('week').agg({
+        'ensemble_forecast': 'sum',
+        'timestamp': 'first'
+    }).reset_index()
+    
+    weekly.columns = ['week', 'total_kwh', 'week_start']
+    weekly['cost'] = weekly['total_kwh'] * PRICE_PER_KWH
+    
+    return weekly
+
+def generate_monthly_forecast(forecast_df):
+    """Generate monthly forecast from daily forecast."""
+    if forecast_df is None or len(forecast_df) == 0:
+        return None
+    
+    forecast_df_copy = forecast_df.copy()
+    forecast_df_copy['timestamp'] = pd.to_datetime(forecast_df_copy['timestamp'])
+    forecast_df_copy['month'] = forecast_df_copy['timestamp'].dt.to_period('M')
+    
+    monthly = forecast_df_copy.groupby('month').agg({
+        'ensemble_forecast': 'sum'
+    }).reset_index()
+    
+    monthly.columns = ['month', 'total_kwh']
+    monthly['cost'] = monthly['total_kwh'] * PRICE_PER_KWH
+    
+    return monthly
+
+def get_early_warning_alerts(standing, consumption_stats):
+    """Generate early warning alerts."""
+    alerts = []
+    
+    if standing['days_until_depletion'] < 7 and standing['current_funds'] > 0:
+        alerts.append({
+            "type": "WARNING",
+            "message": f"⚠️ Low Balance: Your funds will deplete in {standing['days_until_depletion']:.1f} days at current usage rate."
+        })
+    
+    if standing['current_funds'] <= 0 and standing['borrowed_amount'] <= 0:
+        alerts.append({
+            "type": "CRITICAL",
+            "message": "🔴 CRITICAL: No funds available. Services may be disconnected soon."
+        })
+    
+    if standing['borrowed_amount'] > 0:
+        alerts.append({
+            "type": "DEBT",
+            "message": f"💳 Outstanding Debt: You owe ₦{standing['borrowed_amount']:,.2f}"
+        })
+    
+    if consumption_stats and consumption_stats['std_daily_kwh'] > consumption_stats['avg_daily_kwh'] * 0.5:
+        alerts.append({
+            "type": "INFO",
+            "message": "📊 High Usage Variability: Your consumption patterns are highly variable. Monitor closely."
+        })
+    
+    return alerts
+
+def forecast_fund_depletion_date(user, consumption_stats):
+    """Forecast exact date when funds will deplete."""
+    current_funds = user.get("funds", 0.0)
+    if not consumption_stats or consumption_stats['avg_daily_cost'] <= 0 or current_funds <= 0:
+        return None
+    
+    days_remaining = current_funds / consumption_stats['avg_daily_cost']
+    depletion_date = datetime.datetime.utcnow() + datetime.timedelta(days=days_remaining)
+    
+    return {
+        "depletion_date": depletion_date,
+        "days_remaining": days_remaining
+    }
+
+def get_historical_daily_consumption(df):
+    """Get historical daily consumption."""
+    if df is None or len(df) == 0:
+        return None
+    
+    df_copy = df.copy()
+    df_copy['timestamp'] = pd.to_datetime(df_copy['timestamp'])
+    df_copy['date'] = df_copy['timestamp'].dt.date
+    
+    daily = df_copy.groupby('date').agg({
+        'energy': 'sum',
+        'cost': 'sum'
+    }).reset_index()
+    
+    return daily
+
+def get_hourly_consumption_pattern(df):
+    """Get hourly consumption patterns."""
+    if df is None or len(df) == 0:
+        return None
+    
+    hourly = df.groupby('hour').agg({
+        'energy': 'mean',
+        'cost': 'mean'
+    }).reset_index()
+    
+    return hourly
 
 # ---------------------- Utilities ----------------------
 def gen_meter_id():
@@ -377,7 +568,7 @@ DEFAULT_APPLIANCES = [
 ]
 
 # ---------------------- UI ----------------------
-st.set_page_config(page_title="Smart Energy System", layout="centered")
+st.set_page_config(page_title="Smart Energy System", layout="wide")
 
 st.markdown("""
 <style>
@@ -411,6 +602,10 @@ section[data-testid="stSidebar"] { background: black !important; }
 }
 .big-font { font-size:20px !important; }
 .card { background: white;color: black !important; padding: 12px; border-radius: 8px; box-shadow: 0 2px 6px rgba(0,0,0,0.08); margin-bottom: 8px; }
+.metric-card { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 20px; border-radius: 10px; text-align: center; }
+.alert-warning { background-color: #fff3cd; border-left: 4px solid #ffc107; padding: 12px; border-radius: 4px; margin: 10px 0; }
+.alert-danger { background-color: #f8d7da; border-left: 4px solid #dc3545; padding: 12px; border-radius: 4px; margin: 10px 0; }
+.alert-info { background-color: #d1ecf1; border-left: 4px solid #17a2b8; padding: 12px; border-radius: 4px; margin: 10px 0; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -425,7 +620,7 @@ USER_SIDEBAR = [
     ("Fund", "Fund"),
     ("Borrow", "Borrow"),
     ("Usage", "Usage"),
-    ("Forecast", "Forecast"),
+    ("📊 Forecast", "Forecast"),
     ("Meter Details", "Meter Details"),
     ("User Info", "User Info"),
     ("Billing", "Billing"),
@@ -640,61 +835,304 @@ if user and user.get("role") != "admin":
             st.info("No energy consumption data to plot yet.")
 
     elif page == "Forecast":
-        st.header("Energy Consumption Forecast")
-        st.write("This forecast predicts your energy consumption for the next 7 days based on your usage patterns.")
+        st.header("🔮 Professional Energy Consumption Forecast & Analytics")
         
         # Prepare data
-        consumption_df = prepare_consumption_data(user["_id"], days_back=30)
+        consumption_df = prepare_consumption_data(user["_id"], days_back=90)
         
-        if consumption_df is not None and len(consumption_df) >= 5:
-            col1, col2 = st.columns(2)
+        if consumption_df is None or len(consumption_df) < 10:
+            st.warning("⚠️ Insufficient data to generate forecasts. Please use the system for more than 10 transactions to enable detailed analytics.")
+        else:
+            # Calculate statistics
+            consumption_stats = calculate_consumption_stats(consumption_df)
             
-            with col1:
-                st.subheader("Recent Consumption")
-                recent_avg = consumption_df['energy'].tail(10).mean()
-                st.metric("Last 10 periods avg (kWh)", f"{recent_avg:.4f}")
+            # Generate forecasts
+            forecast_df, models = forecast_arima_style(consumption_df, periods=30)
             
-            with col2:
-                st.subheader("Forecast Overview")
-                forecast_values = forecast_consumption(consumption_df, periods=7)
-                if forecast_values:
-                    forecast_cost = get_forecast_cost(forecast_values)
-                    st.metric("7-day forecast cost (₦)", f"₦{forecast_cost:,.2f}")
-            
-            # Show detailed forecast
-            st.subheader("7-Day Forecast Breakdown")
-            if forecast_values:
-                forecast_df = pd.DataFrame({
-                    "Day": [f"Day {i+1}" for i in range(len(forecast_values))],
-                    "Predicted Energy (kWh)": [f"{v:.4f}" for v in forecast_values],
-                    "Estimated Cost (₦)": [f"₦{v * PRICE_PER_KWH:,.2f}" for v in forecast_values]
-                })
-                st.dataframe(forecast_df, use_container_width=True)
+            if forecast_df is not None:
+                # Get customer standing
+                standing = get_customer_standing(user, consumption_stats, forecast_df)
                 
-                # Visualization
-                st.subheader("Consumption Trend & Forecast")
-                plot_data = pd.DataFrame({
-                    "Day": list(range(1, len(forecast_values) + 1)),
-                    "Forecast": forecast_values
-                })
-                st.bar_chart(plot_data.set_index("Day"))
+                # Get depletion date
+                depletion_info = forecast_fund_depletion_date(user, consumption_stats)
+                
+                # Generate alerts
+                alerts = get_early_warning_alerts(standing, consumption_stats)
+                
+                # ===== SECTION 1: CUSTOMER STANDING =====
+                st.divider()
+                st.subheader("📋 CUSTOMER STANDING & FINANCIAL STATUS")
+                
+                col1, col2, col3, col4 = st.columns(4)
+                with col1:
+                    st.metric("Current Balance", f"₦{standing['current_funds']:,.2f}", delta=None)
+                with col2:
+                    st.metric("Borrowed Amount", f"₦{standing['borrowed_amount']:,.2f}", delta=None)
+                with col3:
+                    net_color = "green" if standing['net_position'] >= 0 else "red"
+                    st.metric("Net Position", f"₦{standing['net_position']:,.2f}", delta=None)
+                with col4:
+                    status_color = "🟢" if standing['is_solvent'] else "🔴"
+                    st.metric("Status", f"{status_color} {standing['status']}", delta=None)
+                
+                # Display alerts
+                if alerts:
+                    st.subheader("⚠️ Alerts & Notifications")
+                    for alert in alerts:
+                        if alert['type'] == 'CRITICAL':
+                            st.markdown(f"<div class='alert-danger'>{alert['message']}</div>", unsafe_allow_html=True)
+                        elif alert['type'] == 'WARNING':
+                            st.markdown(f"<div class='alert-warning'>{alert['message']}</div>", unsafe_allow_html=True)
+                        else:
+                            st.markdown(f"<div class='alert-info'>{alert['message']}</div>", unsafe_allow_html=True)
+                
+                # ===== SECTION 2: CONSUMPTION STATISTICS =====
+                st.divider()
+                st.subheader("📊 HISTORICAL CONSUMPTION STATISTICS (Last 90 Days)")
+                
+                stat_col1, stat_col2, stat_col3, stat_col4 = st.columns(4)
+                with stat_col1:
+                    st.metric("Total Consumed (kWh)", f"{consumption_stats['total_energy_kwh']:.2f}")
+                with stat_col2:
+                    st.metric("Total Cost (₦)", f"₦{consumption_stats['total_cost']:,.2f}")
+                with stat_col3:
+                    st.metric("Avg Daily (kWh)", f"{consumption_stats['avg_daily_kwh']:.2f}")
+                with stat_col4:
+                    st.metric("Avg Daily Cost (₦)", f"₦{consumption_stats['avg_daily_cost']:,.2f}")
+                
+                stat_col5, stat_col6, stat_col7, stat_col8 = st.columns(4)
+                with stat_col5:
+                    st.metric("Max Daily (kWh)", f"{consumption_stats['max_daily_kwh']:.2f}")
+                with stat_col6:
+                    st.metric("Min Daily (kWh)", f"{consumption_stats['min_daily_kwh']:.2f}")
+                with stat_col7:
+                    peak_hour_name = f"{consumption_stats['peak_hour']:02d}:00"
+                    st.metric("Peak Hour", peak_hour_name)
+                with stat_col8:
+                    off_peak_name = f"{consumption_stats['off_peak_hour']:02d}:00"
+                    st.metric("Off-Peak Hour", off_peak_name)
+                
+                # ===== SECTION 3: HISTORICAL DAILY CONSUMPTION =====
+                st.divider()
+                st.subheader("📈 Historical Daily Consumption")
+                
+                daily_consumption = get_historical_daily_consumption(consumption_df)
+                if daily_consumption is not None and len(daily_consumption) > 0:
+                    fig_daily = go.Figure()
+                    fig_daily.add_trace(go.Scatter(
+                        x=daily_consumption['date'],
+                        y=daily_consumption['energy'],
+                        mode='lines+markers',
+                        name='Daily Consumption (kWh)',
+                        line=dict(color='#007BFF', width=2),
+                        marker=dict(size=5)
+                    ))
+                    fig_daily.update_layout(
+                        title="Daily Energy Consumption Trend",
+                        xaxis_title="Date",
+                        yaxis_title="Energy (kWh)",
+                        hovermode='x unified',
+                        template='plotly_white',
+                        height=400
+                    )
+                    st.plotly_chart(fig_daily, use_container_width=True)
+                
+                # ===== SECTION 4: HOURLY CONSUMPTION PATTERN =====
+                st.divider()
+                st.subheader("⏰ Hourly Consumption Pattern")
+                
+                hourly_pattern = get_hourly_consumption_pattern(consumption_df)
+                if hourly_pattern is not None and len(hourly_pattern) > 0:
+                    fig_hourly = go.Figure()
+                    fig_hourly.add_trace(go.Bar(
+                        x=hourly_pattern['hour'],
+                        y=hourly_pattern['energy'],
+                        name='Avg Consumption (kWh)',
+                        marker=dict(color='#FFC107')
+                    ))
+                    fig_hourly.update_layout(
+                        title="Average Hourly Consumption Pattern",
+                        xaxis_title="Hour of Day",
+                        yaxis_title="Average Energy (kWh)",
+                        hovermode='x unified',
+                        template='plotly_white',
+                        height=400
+                    )
+                    st.plotly_chart(fig_hourly, use_container_width=True)
+                
+                # ===== SECTION 5: EARLY FORECAST (7 DAYS) =====
+                st.divider()
+                st.subheader("🔔 Early Forecast (Next 7 Days)")
+                
+                early_forecast = forecast_df.head(7)
+                if early_forecast is not None and len(early_forecast) > 0:
+                    early_cost = early_forecast['ensemble_forecast'].sum() * PRICE_PER_KWH
+                    early_col1, early_col2, early_col3 = st.columns(3)
+                    with early_col1:
+                        st.metric("7-Day Forecast (kWh)", f"{early_forecast['ensemble_forecast'].sum():.2f}")
+                    with early_col2:
+                        st.metric("7-Day Forecast Cost (₦)", f"₦{early_cost:,.2f}")
+                    with early_col3:
+                        avg_daily_forecast = early_forecast['ensemble_forecast'].mean()
+                        st.metric("Daily Average (kWh)", f"{avg_daily_forecast:.2f}")
+                    
+                    fig_early = go.Figure()
+                    fig_early.add_trace(go.Bar(
+                        x=range(1, 8),
+                        y=early_forecast['ensemble_forecast'].values,
+                        name='Predicted Consumption',
+                        marker=dict(color='#28a745')
+                    ))
+                    fig_early.update_layout(
+                        title="7-Day Early Forecast",
+                        xaxis_title="Day",
+                        yaxis_title="Energy (kWh)",
+                        hovermode='x unified',
+                        template='plotly_white',
+                        height=400
+                    )
+                    st.plotly_chart(fig_early, use_container_width=True)
+                    
+                    # 7-day table
+                    early_table = pd.DataFrame({
+                        'Day': [f"Day {i+1}" for i in range(7)],
+                        'Forecast (kWh)': [f"{v:.4f}" for v in early_forecast['ensemble_forecast'].values],
+                        'Cost (₦)': [f"₦{v * PRICE_PER_KWH:,.2f}" for v in early_forecast['ensemble_forecast'].values]
+                    })
+                    st.dataframe(early_table, use_container_width=True)
+                
+                # ===== SECTION 6: WEEKLY FORECAST =====
+                st.divider()
+                st.subheader("📅 Weekly Forecast (Next 4-5 Weeks)")
+                
+                weekly_forecast = generate_weekly_forecast(forecast_df)
+                if weekly_forecast is not None and len(weekly_forecast) > 0:
+                    fig_weekly = go.Figure()
+                    fig_weekly.add_trace(go.Bar(
+                        x=[f"Week {i+1}" for i in range(len(weekly_forecast))],
+                        y=weekly_forecast['total_kwh'],
+                        name='Weekly Consumption (kWh)',
+                        marker=dict(color='#FF6B6B')
+                    ))
+                    fig_weekly.update_layout(
+                        title="Weekly Energy Forecast",
+                        xaxis_title="Week",
+                        yaxis_title="Energy (kWh)",
+                        hovermode='x unified',
+                        template='plotly_white',
+                        height=400
+                    )
+                    st.plotly_chart(fig_weekly, use_container_width=True)
+                    
+                    # Weekly table
+                    weekly_table = pd.DataFrame({
+                        'Week': [f"Week {i+1}" for i in range(len(weekly_forecast))],
+                        'Total kWh': [f"{v:.2f}" for v in weekly_forecast['total_kwh']],
+                        'Cost (₦)': [f"₦{v:,.2f}" for v in weekly_forecast['cost']]
+                    })
+                    st.dataframe(weekly_table, use_container_width=True)
+                
+                # ===== SECTION 7: MONTHLY FORECAST =====
+                st.divider()
+                st.subheader("🗓️ Monthly Forecast")
+                
+                monthly_forecast = generate_monthly_forecast(forecast_df)
+                if monthly_forecast is not None and len(monthly_forecast) > 0:
+                    fig_monthly = go.Figure()
+                    fig_monthly.add_trace(go.Bar(
+                        x=[str(m) for m in monthly_forecast['month']],
+                        y=monthly_forecast['total_kwh'],
+                        name='Monthly Consumption (kWh)',
+                        marker=dict(color='#4C72B0')
+                    ))
+                    fig_monthly.update_layout(
+                        title="Monthly Energy Forecast",
+                        xaxis_title="Month",
+                        yaxis_title="Energy (kWh)",
+                        hovermode='x unified',
+                        template='plotly_white',
+                        height=400
+                    )
+                    st.plotly_chart(fig_monthly, use_container_width=True)
+                    
+                    # Monthly table
+                    monthly_table = pd.DataFrame({
+                        'Month': [str(m) for m in monthly_forecast['month']],
+                        'Total kWh': [f"{v:.2f}" for v in monthly_forecast['total_kwh']],
+                        'Estimated Cost (₦)': [f"₦{v:,.2f}" for v in monthly_forecast['cost']]
+                    })
+                    st.dataframe(monthly_table, use_container_width=True)
+                
+                # ===== SECTION 8: FUND DEPLETION FORECAST =====
+                st.divider()
+                st.subheader("💰 Fund Depletion & Budget Analysis")
+                
+                if depletion_info:
+                    days_rem = depletion_info['days_remaining']
+                    depl_date = depletion_info['depletion_date']
+                    
+                    col_depl1, col_depl2, col_depl3 = st.columns(3)
+                    with col_depl1:
+                        st.metric("Days Until Depletion", f"{days_rem:.1f} days")
+                    with col_depl2:
+                        st.metric("Estimated Depletion Date", depl_date.strftime("%Y-%m-%d %H:%M"))
+                    with col_depl3:
+                        funds_needed = standing['monthly_forecast_cost'] - standing['current_funds']
+                        if funds_needed > 0:
+                            st.metric("Additional Funds Needed", f"₦{funds_needed:,.2f}")
+                        else:
+                            st.metric("Surplus After Month", f"₦{abs(funds_needed):,.2f}")
                 
                 # Budget recommendation
-                st.subheader("Budget Recommendation")
-                forecast_total = sum(forecast_values)
-                forecast_total_cost = forecast_total * PRICE_PER_KWH
-                current_funds = user.get("funds", 0.0)
+                st.subheader("💡 Budget Recommendations")
+                rec_col1, rec_col2 = st.columns(2)
                 
-                if current_funds < forecast_total_cost:
-                    shortfall = forecast_total_cost - current_funds
-                    st.warning(f"⚠️ Your current balance (₦{current_funds:,.2f}) may not cover the 7-day forecast cost (₦{forecast_total_cost:,.2f}). You need ₦{shortfall:,.2f} more.")
-                else:
-                    buffer = current_funds - forecast_total_cost
-                    st.success(f"✓ Your balance is sufficient! After 7 days of predicted usage, you'll have ₦{buffer:,.2f} remaining.")
+                with rec_col1:
+                    if standing['current_funds'] < standing['monthly_forecast_cost']:
+                        shortfall = standing['monthly_forecast_cost'] - standing['current_funds']
+                        st.warning(f"""
+                        **Monthly Shortfall Alert 🚨**
+                        
+                        Your balance (₦{standing['current_funds']:,.2f}) is insufficient for the forecasted monthly cost (₦{standing['monthly_forecast_cost']:,.2f}).
+                        
+                        **You need ₦{shortfall:,.2f} more to maintain service throughout the month.**
+                        """)
+                    else:
+                        surplus = standing['current_funds'] - standing['monthly_forecast_cost']
+                        st.success(f"""
+                        **Budget Status ✓**
+                        
+                        Your balance (₦{standing['current_funds']:,.2f}) is sufficient for the forecasted monthly cost (₦{standing['monthly_forecast_cost']:,.2f}).
+                        
+                        **Expected remaining balance: ₦{surplus:,.2f}**
+                        """)
+                
+                with rec_col2:
+                    daily_avg = consumption_stats['avg_daily_cost']
+                    days_until_critical = standing['current_funds'] / daily_avg if daily_avg > 0 else 999
+                    
+                    if days_until_critical < 3:
+                        st.error(f"""
+                        **CRITICAL: Fund Immediately 🔴**
+                        
+                        At your current usage rate, your balance will deplete in **{days_until_critical:.1f} days**.
+                        
+                        Immediate action required to avoid service disconnection.
+                        """)
+                    elif days_until_critical < 7:
+                        st.warning(f"""
+                        **Low Balance Warning ⚠️**
+                        
+                        Consider topping up soon. Balance will last approximately **{days_until_critical:.1f} days**.
+                        """)
+                    else:
+                        st.info(f"""
+                        **Healthy Balance 💚**
+                        
+                        At current usage, balance will last approximately **{days_until_critical:.1f} days**.
+                        """)
             else:
-                st.warning("Could not generate forecast. Please try again later.")
-        else:
-            st.info("Not enough consumption data to generate a forecast. Please use the system for a few days first.")
+                st.error("❌ Unable to generate forecast. Please try again later.")
 
     elif page == "Meter Details":
         meter = meters_col.find_one({"meter_id": user.get("meter_id")})
@@ -764,86 +1202,4 @@ if user and user.get("role") == "admin":
         st.write(f"Admin Name: {user.get('full_name')}")
         st.write(f"Email: {user.get('email')}")
         st.write(f"Phone: {user.get('phone')}")
-        st.write(f"Username: {user.get('username')}")
-        st.info("Admin details cannot be deleted.")
-
-    elif page == "Manage Users":
-        st.header("Manage Users")
-        users_list = list(users_col.find({"role": "user"}))
-        for u in users_list:
-            cols = st.columns([3,1])
-            cols[0].write(f"{u.get('full_name')} ({u.get('username')}) - {u.get('email')}")
-            if cols[1].button("Delete", key=f"del_{u.get('_id')}"):
-                users_col.delete_one({"_id": u.get('_id')})
-                meters_col.update_many({"user_id": u.get('_id')}, {"$set": {"status": "deleted"}})
-                appliances_col.delete_many({"meter_id": u.get('meter_id')})
-                st.success("User deleted.")
-                st.rerun()
-
-    elif page == "Transaction Log":
-        st.header("Transaction Log (System-wide)")
-        txs = safe_find_transactions({}, limit=2000)
-        if txs:
-            rows = []
-            for t in txs:
-                uid = t.get("user_id")
-                uname = (users_col.find_one({"_id": uid}) or {}).get("username", "deleted_user")
-                ts = t.get("timestamp")
-                if not isinstance(ts, datetime.datetime):
-                    try:
-                        ts = pd.to_datetime(ts)
-                    except Exception:
-                        ts = None
-                rows.append({
-                    "user": uname,
-                    "timestamp": ts.strftime('%Y-%m-%d %H:%M:%S') if isinstance(ts, datetime.datetime) else "unknown",
-                    "type": t.get("type"),
-                    "amount": t.get("amount", 0.0),
-                    "balance_after": t.get("balance_after", 0.0)
-                })
-            tx_df = pd.DataFrame(rows)
-            st.dataframe(tx_df)
-            csv = tx_df.to_csv(index=False)
-            st.download_button("Print All Transactions", data=csv, file_name="all_transactions.csv", mime="text/csv")
-        else:
-            st.info("No transactions found.")
-
-    elif page == "Debtors":
-        st.header("Debtors List")
-        debtors = list(users_col.find({"role": "user", "borrowed": {"$gt": 0.0}}))
-        if debtors:
-            for d in debtors:
-                st.write(f"**{d.get('full_name')} ({d.get('username')})** - Owes: ₦{d.get('borrowed',0):,.2f}")
-        else:
-            st.info("No users are owing at this time.")
-
-    elif page == "Admin Funding":
-        st.header("Admin Funding")
-        users_list = list(users_col.find({"role": "user"}))
-        for u in users_list:
-            cols = st.columns([3,1])
-            cols[0].write(f"{u.get('full_name')} ({u.get('username')}) - ₦{u.get('funds',0):,.2f}")
-            fund_amount = cols[1].number_input(f"Fund for {u.get('username')}", min_value=0.0, step=100.0, key=f"admin_fund_{u.get('_id')}")
-            if cols[1].button(f"Fund {u.get('username')}", key=f"admin_fund_btn_{u.get('_id')}"):
-                users_col.update_one({"_id": u["_id"]}, {"$inc": {"funds": fund_amount}})
-                updated_u = users_col.find_one({"_id": u["_id"]})
-                transactions_col.insert_one({
-                    "user_id": u["_id"],
-                    "type": "fund",
-                    "amount": fund_amount,
-                    "balance_after": updated_u.get("funds",0.0),
-                    "metadata": {"reason": "admin_top_up"},
-                    "timestamp": datetime.datetime.utcnow()
-                })
-                st.success(f"Funded ₦{fund_amount:,.2f} to {u.get('username')}")
-                st.rerun()
-
-    elif page == "Logout":
-        stop_simulation_session()
-        st.session_state["user_id"] = None
-        st.session_state["page"] = "Login"
-        st.success("Logged out")
-        st.rerun()
-
-st.markdown("---")
-st.write("Developed by: Happiness Sunday Eyeh.")
+        st.write(f"Username: {user.get
