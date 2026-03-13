@@ -10,6 +10,9 @@ import datetime
 import random
 import uuid
 import pandas as pd
+import numpy as np
+from sklearn.linear_model import LinearRegression
+from sklearn.preprocessing import StandardScaler
 
 # ---------------------- Configuration ----------------------
 MONGO_URI = st.secrets.get(
@@ -42,6 +45,80 @@ users_col = db.users
 meters_col = db.meters
 appliances_col = db.appliances
 transactions_col = db.transactions
+
+# ---------------------- Forecasting Functions ----------------------
+def prepare_consumption_data(user_id, days_back=30):
+    """Prepare consumption data for forecasting from recent transactions."""
+    try:
+        cutoff_date = datetime.datetime.utcnow() - datetime.timedelta(days=days_back)
+        transactions = list(transactions_col.find({
+            "user_id": user_id,
+            "type": "deduction",
+            "timestamp": {"$gte": cutoff_date}
+        }).sort("timestamp", 1))
+        
+        if len(transactions) < 5:
+            return None
+        
+        data = []
+        for t in transactions:
+            energy_kwh = t.get("amount", 0.0) / PRICE_PER_KWH if PRICE_PER_KWH != 0 else 0
+            data.append({
+                "timestamp": t["timestamp"],
+                "energy": energy_kwh
+            })
+        
+        return pd.DataFrame(data)
+    except Exception as e:
+        st.warning(f"Error preparing consumption data: {e}")
+        return None
+
+def forecast_consumption(consumption_df, periods=7):
+    """Forecast energy consumption for next N periods using linear regression."""
+    try:
+        if consumption_df is None or len(consumption_df) < 5:
+            return None
+        
+        consumption_df = consumption_df.copy()
+        consumption_df['timestamp'] = pd.to_datetime(consumption_df['timestamp'])
+        consumption_df = consumption_df.sort_values('timestamp')
+        
+        # Create time-based features
+        consumption_df['days_elapsed'] = (consumption_df['timestamp'] - consumption_df['timestamp'].min()).dt.total_seconds() / (24 * 3600)
+        consumption_df['hour'] = consumption_df['timestamp'].dt.hour
+        consumption_df['day_of_week'] = consumption_df['timestamp'].dt.dayofweek
+        
+        # Prepare features and target
+        X = consumption_df[['days_elapsed', 'hour', 'day_of_week']].values
+        y = consumption_df['energy'].values
+        
+        # Train model
+        model = LinearRegression()
+        model.fit(X, y)
+        
+        # Generate future predictions
+        last_day = consumption_df['days_elapsed'].max()
+        future_predictions = []
+        
+        for i in range(1, periods + 1):
+            future_day = last_day + i
+            future_hour = (consumption_df['timestamp'].max().hour + i) % 24
+            future_dow = (consumption_df['timestamp'].max().dayofweek + (i // 24)) % 7
+            
+            X_future = np.array([[future_day, future_hour, future_dow]])
+            pred = model.predict(X_future)[0]
+            future_predictions.append(max(0, pred))  # Ensure non-negative
+        
+        return future_predictions
+    except Exception as e:
+        st.warning(f"Error in forecasting: {e}")
+        return None
+
+def get_forecast_cost(forecast_values):
+    """Calculate total forecasted cost from energy values."""
+    if not forecast_values:
+        return 0.0
+    return sum(forecast_values) * PRICE_PER_KWH
 
 # ---------------------- Utilities ----------------------
 def gen_meter_id():
@@ -348,6 +425,7 @@ USER_SIDEBAR = [
     ("Fund", "Fund"),
     ("Borrow", "Borrow"),
     ("Usage", "Usage"),
+    ("Forecast", "Forecast"),
     ("Meter Details", "Meter Details"),
     ("User Info", "User Info"),
     ("Billing", "Billing"),
@@ -460,7 +538,6 @@ if user and user.get("role") != "admin":
                     appliances_col.update_one({"_id": a.get("_id")}, {"$set": {"is_on": bool(new_state), "manual_control": True}})
                     st.rerun()
                 st.markdown("</div>", unsafe_allow_html=True)
-        # Borrow moved to sidebar
 
     elif page == "Fund":
         st.header("Fund Account")
@@ -561,6 +638,63 @@ if user and user.get("role") != "admin":
             st.line_chart(df.set_index("timestamp")["energy"])
         else:
             st.info("No energy consumption data to plot yet.")
+
+    elif page == "Forecast":
+        st.header("Energy Consumption Forecast")
+        st.write("This forecast predicts your energy consumption for the next 7 days based on your usage patterns.")
+        
+        # Prepare data
+        consumption_df = prepare_consumption_data(user["_id"], days_back=30)
+        
+        if consumption_df is not None and len(consumption_df) >= 5:
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.subheader("Recent Consumption")
+                recent_avg = consumption_df['energy'].tail(10).mean()
+                st.metric("Last 10 periods avg (kWh)", f"{recent_avg:.4f}")
+            
+            with col2:
+                st.subheader("Forecast Overview")
+                forecast_values = forecast_consumption(consumption_df, periods=7)
+                if forecast_values:
+                    forecast_cost = get_forecast_cost(forecast_values)
+                    st.metric("7-day forecast cost (₦)", f"₦{forecast_cost:,.2f}")
+            
+            # Show detailed forecast
+            st.subheader("7-Day Forecast Breakdown")
+            if forecast_values:
+                forecast_df = pd.DataFrame({
+                    "Day": [f"Day {i+1}" for i in range(len(forecast_values))],
+                    "Predicted Energy (kWh)": [f"{v:.4f}" for v in forecast_values],
+                    "Estimated Cost (₦)": [f"₦{v * PRICE_PER_KWH:,.2f}" for v in forecast_values]
+                })
+                st.dataframe(forecast_df, use_container_width=True)
+                
+                # Visualization
+                st.subheader("Consumption Trend & Forecast")
+                plot_data = pd.DataFrame({
+                    "Day": list(range(1, len(forecast_values) + 1)),
+                    "Forecast": forecast_values
+                })
+                st.bar_chart(plot_data.set_index("Day"))
+                
+                # Budget recommendation
+                st.subheader("Budget Recommendation")
+                forecast_total = sum(forecast_values)
+                forecast_total_cost = forecast_total * PRICE_PER_KWH
+                current_funds = user.get("funds", 0.0)
+                
+                if current_funds < forecast_total_cost:
+                    shortfall = forecast_total_cost - current_funds
+                    st.warning(f"⚠️ Your current balance (₦{current_funds:,.2f}) may not cover the 7-day forecast cost (₦{forecast_total_cost:,.2f}). You need ₦{shortfall:,.2f} more.")
+                else:
+                    buffer = current_funds - forecast_total_cost
+                    st.success(f"✓ Your balance is sufficient! After 7 days of predicted usage, you'll have ₦{buffer:,.2f} remaining.")
+            else:
+                st.warning("Could not generate forecast. Please try again later.")
+        else:
+            st.info("Not enough consumption data to generate a forecast. Please use the system for a few days first.")
 
     elif page == "Meter Details":
         meter = meters_col.find_one({"meter_id": user.get("meter_id")})
