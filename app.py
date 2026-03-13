@@ -81,7 +81,9 @@ def get_appliance_consumption(meter_id, days_back=90):
         return {}
 
 def rank_appliances_by_consumption(appliance_data):
-    return sorted(appliance_data.items(), key=lambda x: x[1].get("kwh", 0), reverse=True)
+    # Filter out unknown appliances
+    filtered = {k: v for k, v in appliance_data.items() if v.get("name") and v.get("name") != "unknown"}
+    return sorted(filtered.items(), key=lambda x: x[1].get("kwh", 0), reverse=True)
 
 def get_appliance_forecasts(meter_id, appliance_id, periods=7):
     """Proper forecasting for individual appliances using ensemble method"""
@@ -173,6 +175,10 @@ def get_savings_recommendations(appliance_data, avg_daily_cost):
     sorted_apps = sorted(appliance_data.items(), key=lambda x: x[1].get("power_w", 0), reverse=True)
     
     for app_id, data in sorted_apps:
+        # Skip unknown appliances
+        if not data.get("name") or data.get("name") == "unknown":
+            continue
+            
         if data.get("is_on") and data.get("power_w", 0) > 100:
             daily_cost = (data.get("power_w", 0) / 1000.0) * 24 * PRICE_PER_KWH
             savings = daily_cost / avg_daily_cost * 100 if avg_daily_cost > 0 else 0
@@ -192,6 +198,10 @@ def get_savings_recommendations(appliance_data, avg_daily_cost):
 def auto_turn_off_high_consumption(meter_id, appliance_data, threshold_w=500):
     turned_off = []
     for app_id, data in appliance_data.items():
+        # Skip unknown appliances
+        if not data.get("name") or data.get("name") == "unknown":
+            continue
+            
         if data.get("power_w", 0) >= threshold_w and data.get("is_on"):
             appliances_col.update_one({"_id": data.get("_id")}, {"$set": {"is_on": False, "manual_control": False}})
             turned_off.append({"name": data.get("name"), "power": data.get("power_w")})
@@ -712,141 +722,147 @@ elif user and user.get("role") != "admin":
         else:
             ranked_apps = rank_appliances_by_consumption(appliance_data)
             
-            # Create clean table
-            table_data = []
-            total_kwh = 0
-            total_cost = 0
-            
-            for app_id, data in ranked_apps:
-                kwh = data.get('kwh', 0)
-                cost = data.get('cost', 0)
-                total_kwh += kwh
-                total_cost += cost
+            if not ranked_apps:
+                st.info("No valid appliances to display.")
+            else:
+                # Create clean table
+                table_data = []
+                total_kwh = 0
+                total_cost = 0
                 
-                table_data.append({
-                    "Appliance": f"{data.get('name', 'Unknown').title()} ({data.get('location')})",
-                    "kWh Used": f"{kwh:.3f}",
-                    "Cost (₦)": f"{cost:.2f}",
-                    "Power (W)": data.get('power_w', 0)
-                })
-            
-            # Display in two columns
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                st.subheader("Appliance Consumption Breakdown")
-                table_df = pd.DataFrame(table_data)
-                st.dataframe(table_df, use_container_width=True, hide_index=True)
-            
-            with col2:
-                st.subheader("Cost Breakdown by Appliance")
-                
-                # Pie chart
-                pie_labels = [d["Appliance"] for d in table_data]
-                pie_values = [float(d["kWh Used"]) for d in table_data]
-                
-                fig_pie = go.Figure(data=[go.Pie(
-                    labels=pie_labels,
-                    values=pie_values,
-                    marker=dict(colors=['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b', '#e377c2'])
-                )])
-                fig_pie.update_layout(
-                    title="Cost Breakdown by Appliance",
-                    height=450,
-                    font=dict(size=12)
-                )
-                st.plotly_chart(fig_pie, use_container_width=True)
-            
-            st.markdown("---")
-            
-            # Summary
-            st.subheader("📊 Summary")
-            sum_col1, sum_col2, sum_col3 = st.columns(3)
-            sum_col1.metric("Total kWh Used", f"{total_kwh:.3f}")
-            sum_col2.metric("Total Cost", f"₦{total_cost:,.2f}")
-            sum_col3.metric("Appliances", len(table_data))
-            
-            st.markdown("---")
-            
-            # RECOMMENDATIONS
-            st.subheader("💡 RECOMMENDATIONS")
-            
-            if consumption_stats:
-                recommendations = get_savings_recommendations(appliance_data, consumption_stats['avg_daily_cost'])
-                
-                if recommendations:
-                    st.markdown("**High Consumption Appliances (consider turning OFF):**")
+                for app_id, data in ranked_apps:
+                    kwh = data.get('kwh', 0)
+                    cost = data.get('cost', 0)
+                    total_kwh += kwh
+                    total_cost += cost
                     
-                    for idx, rec in enumerate(recommendations[:5]):
-                        col_rec1, col_rec2, col_rec3 = st.columns([2, 1, 1])
-                        
-                        with col_rec1:
-                            status = "🟢 ON" if rec['is_on'] else "🔴 OFF"
-                            st.write(f"**{idx+1}. {rec['name'].upper()} ({rec['location']})**")
-                            st.write(f"Power: {rec['power_w']}W | Daily Cost: ₦{rec['est_daily_cost']:,.2f}")
-                            st.write(f"Can save: {rec['savings_percent']:.1f}% | {status}")
-                        
-                        with col_rec2:
-                            if rec['is_on']:
-                                if st.button("Turn OFF", key=f"off_{rec['appliance_id']}"):
-                                    appliances_col.update_one({"_id": rec["_id"]}, {"$set": {"is_on": False}})
-                                    st.success("OFF!")
-                                    st.rerun()
-                        
-                        with col_rec3:
-                            monthly = rec['est_daily_cost'] * 30
-                            st.write(f"**Monthly Save**")
-                            st.write(f"₦{monthly:,.2f}")
-                        
-                        st.divider()
-            
-            st.markdown("---")
-            
-            # APPLIANCE FORECASTS
-            st.subheader("📈 APPLIANCE FORECASTS (Next 7 Days)")
-            
-            ranked_top = rank_appliances_by_consumption(appliance_data)[:3]
-            
-            for app_id, data in ranked_top:
-                with st.expander(f"📌 {data.get('name').upper()} - {data.get('power_w')}W ({data.get('location')})"):
-                    forecast = get_appliance_forecasts(user.get("meter_id"), app_id, periods=7)
+                    table_data.append({
+                        "Appliance": f"{data.get('name', '').title()} ({data.get('location')})",
+                        "kWh Used": f"{kwh:.3f}",
+                        "Cost (₦)": f"{cost:.2f}",
+                        "Power (W)": data.get('power_w', 0)
+                    })
+                
+                # Display in two columns
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    st.subheader("Appliance Consumption Breakdown")
+                    table_df = pd.DataFrame(table_data)
+                    st.dataframe(table_df, use_container_width=True, hide_index=True)
+                
+                with col2:
+                    st.subheader("Cost Breakdown by Appliance")
                     
-                    if forecast:
-                        forecast_list = []
-                        total_7day_kwh = 0
-                        total_7day_cost = 0
+                    # Pie chart
+                    pie_labels = [d["Appliance"] for d in table_data]
+                    pie_values = [float(d["kWh Used"]) for d in table_data]
+                    
+                    fig_pie = go.Figure(data=[go.Pie(
+                        labels=pie_labels,
+                        values=pie_values,
+                        marker=dict(colors=['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b', '#e377c2'])
+                    )])
+                    fig_pie.update_layout(
+                        title="Cost Breakdown by Appliance",
+                        height=450,
+                        font=dict(size=12)
+                    )
+                    st.plotly_chart(fig_pie, use_container_width=True)
+                
+                st.markdown("---")
+                
+                # Summary
+                st.subheader("📊 Summary")
+                sum_col1, sum_col2, sum_col3 = st.columns(3)
+                sum_col1.metric("Total kWh Used", f"{total_kwh:.3f}")
+                sum_col2.metric("Total Cost", f"₦{total_cost:,.2f}")
+                sum_col3.metric("Appliances", len(table_data))
+                
+                st.markdown("---")
+                
+                # RECOMMENDATIONS
+                st.subheader("💡 RECOMMENDATIONS")
+                
+                if consumption_stats:
+                    recommendations = get_savings_recommendations(appliance_data, consumption_stats['avg_daily_cost'])
+                    
+                    if recommendations:
+                        st.markdown("**High Consumption Appliances (consider turning OFF):**")
                         
-                        for f in forecast:
-                            kwh = f['forecast_kwh']
-                            cost = kwh * PRICE_PER_KWH
-                            total_7day_kwh += kwh
-                            total_7day_cost += cost
+                        for idx, rec in enumerate(recommendations[:5]):
+                            col_rec1, col_rec2, col_rec3 = st.columns([2, 1, 1])
                             
-                            forecast_list.append({
-                                "Date": f['date'].strftime("%Y-%m-%d"),
-                                "Predicted kWh": f"{kwh:.4f}",
-                                "Est. Cost (₦)": f"₦{cost:,.2f}"
-                            })
-                        
-                        col_f1, col_f2 = st.columns([1, 1])
-                        
-                        with col_f1:
-                            st.dataframe(pd.DataFrame(forecast_list), use_container_width=True, hide_index=True)
-                        
-                        with col_f2:
-                            fig_f = go.Figure()
-                            fig_f.add_trace(go.Bar(
-                                x=[f['date'].strftime("%m-%d") for f in forecast],
-                                y=[f['forecast_kwh'] for f in forecast],
-                                marker_color='#FF6B6B'
-                            ))
-                            fig_f.update_layout(title="7-Day Forecast", height=350, template='plotly_white')
-                            st.plotly_chart(fig_f, use_container_width=True)
-                        
-                        st.metric("7-Day Total", f"{total_7day_kwh:.2f} kWh | ₦{total_7day_cost:,.2f}")
-                        st.write(f"📅 **Monthly Impact:** ₦{total_7day_cost * 4.3:,.2f}")
-                    else:
-                        st.info("Not enough data for forecast yet.")
+                            with col_rec1:
+                                status = "🟢 ON" if rec['is_on'] else "🔴 OFF"
+                                st.write(f"**{idx+1}. {rec['name'].upper()} ({rec['location']})**")
+                                st.write(f"Power: {rec['power_w']}W | Daily Cost: ₦{rec['est_daily_cost']:,.2f}")
+                                st.write(f"Can save: {rec['savings_percent']:.1f}% | {status}")
+                            
+                            with col_rec2:
+                                if rec['is_on']:
+                                    if st.button("Turn OFF", key=f"off_{rec['appliance_id']}"):
+                                        appliances_col.update_one({"_id": rec["_id"]}, {"$set": {"is_on": False}})
+                                        st.success("OFF!")
+                                        st.rerun()
+                            
+                            with col_rec3:
+                                monthly = rec['est_daily_cost'] * 30
+                                st.write(f"**Monthly Save**")
+                                st.write(f"₦{monthly:,.2f}")
+                            
+                            st.divider()
+                
+                st.markdown("---")
+                
+                # APPLIANCE FORECASTS
+                st.subheader("📈 APPLIANCE FORECASTS (Next 7 Days)")
+                
+                ranked_top = rank_appliances_by_consumption(appliance_data)[:3]
+                
+                if ranked_top:
+                    for app_id, data in ranked_top:
+                        with st.expander(f"📌 {data.get('name').upper()} - {data.get('power_w')}W ({data.get('location')})"):
+                            forecast = get_appliance_forecasts(user.get("meter_id"), app_id, periods=7)
+                            
+                            if forecast:
+                                forecast_list = []
+                                total_7day_kwh = 0
+                                total_7day_cost = 0
+                                
+                                for f in forecast:
+                                    kwh = f['forecast_kwh']
+                                    cost = kwh * PRICE_PER_KWH
+                                    total_7day_kwh += kwh
+                                    total_7day_cost += cost
+                                    
+                                    forecast_list.append({
+                                        "Date": f['date'].strftime("%Y-%m-%d"),
+                                        "Predicted kWh": f"{kwh:.4f}",
+                                        "Est. Cost (₦)": f"₦{cost:,.2f}"
+                                    })
+                                
+                                col_f1, col_f2 = st.columns([1, 1])
+                                
+                                with col_f1:
+                                    st.dataframe(pd.DataFrame(forecast_list), use_container_width=True, hide_index=True)
+                                
+                                with col_f2:
+                                    fig_f = go.Figure()
+                                    fig_f.add_trace(go.Bar(
+                                        x=[f['date'].strftime("%m-%d") for f in forecast],
+                                        y=[f['forecast_kwh'] for f in forecast],
+                                        marker_color='#FF6B6B'
+                                    ))
+                                    fig_f.update_layout(title="7-Day Forecast", height=350, template='plotly_white')
+                                    st.plotly_chart(fig_f, use_container_width=True)
+                                
+                                st.metric("7-Day Total", f"{total_7day_kwh:.2f} kWh | ₦{total_7day_cost:,.2f}")
+                                st.write(f"📅 **Monthly Impact:** ₦{total_7day_cost * 4.3:,.2f}")
+                            else:
+                                st.info("Not enough data for forecast yet.")
+                else:
+                    st.info("No appliances to forecast.")
 
     elif page == "Forecast":
         st.header("🔮 ENERGY FORECAST")
